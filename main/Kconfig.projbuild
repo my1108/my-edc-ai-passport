@@ -1,0 +1,46 @@
+menu "AI Passport Home Screen"
+
+    config HOME_TZ_DEFAULT
+        string "Default timezone (POSIX TZ string)"
+        default "<+08>-8"
+        help
+            Timezone used until one is set from the serial console with
+            `tz <POSIX TZ>`. The default "<+08>-8" is UTC+8 without daylight
+            saving (Asia/Kuala_Lumpur). POSIX offsets are inverted: UTC+8 is
+            written -8. Example with DST: "CET-1CEST,M3.5.0,M10.5.0/3".
+
+    config HOME_CLOCK_12H_DEFAULT
+        bool "Use a 12-hour clock with AM/PM by default"
+        default n
+        help
+            The serial command `clock 12` or `clock 24` overrides this and is
+            kept in NVS.
+
+    config HOME_SYNC_HOUR
+        int "Daily time-sync hour (local time, 0-23)"
+        range 0 23
+        default 3
+
+    config HOME_NTP_SERVER
+        string "SNTP server"
+        default "pool.ntp.org"
+
+    config HOME_GEO_URL
+        string "IP geolocation URL"
+        default "https://ipwho.is/?fields=success,city,latitude,longitude"
+        help
+            Must return JSON with city, latitude, and longitude, either in the
+            ipwho.is shape ({"success":true,"city","latitude","longitude"}) or
+            the ip-api.com shape ({"status":"success","city","lat","lon"}).
+            The provider sees the device's public IP address.
+
+    config HOME_WEATHER_BASE_URL
+        string "Open-Meteo base URL"
+        default "https://api.open-meteo.com"
+
+    config HOME_WEATHER_REFRESH_MIN
+        int "Weather refresh interval (minutes)"
+        range 5 180
+        default 30
+
+endmenu
