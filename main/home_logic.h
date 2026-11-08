@@ -11,6 +11,8 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "spot_logic.h"
+
 // ---------------------------------------------------------------------------
 // Clock and date
 // ---------------------------------------------------------------------------
@@ -71,15 +73,19 @@ bool home_fmt_sync(char *out, size_t size, const home_sync_view_t *view);
 // monotonic clock even when the wall clock is not yet valid)
 // ---------------------------------------------------------------------------
 
-#define HOME_SYNC_RETRY_S (60 * 60)
+#define HOME_SYNC_RETRY_MIN_S 60          // first retry after a failed sync
+#define HOME_SYNC_RETRY_S     (60 * 60)    // longest gap between retries
 
 // Delay from `local_sec_of_day` (0..86399) until the next `hour`:00:00 local,
 // strictly in the future (exactly at the hour yields 24 h).
 int32_t home_delay_until_hour(int32_t local_sec_of_day, int hour);
 
 // Delay after a time-sync attempt: the next daily `hour`:00 on success,
-// HOME_SYNC_RETRY_S on failure.
-int32_t home_time_sync_delay(bool success, int32_t local_sec_of_day, int hour);
+// a retry on failure: HOME_SYNC_RETRY_MIN_S after the first failure, doubling
+// with each further one (`failures` counts consecutive failures, including
+// this one) up to HOME_SYNC_RETRY_S. A single dropped packet at boot then
+// costs a minute of "--:--", not an hour.
+int32_t home_time_sync_delay(bool success, int32_t local_sec_of_day, int hour, int failures);
 
 // Delay after a weather fetch: `refresh_min` minutes on success, a shorter
 // retry (10 min, never longer than refresh_min) on failure.
@@ -201,8 +207,9 @@ bool home_cache_decode(const home_cache_blob_t *blob, home_cache_t *cache);
 
 typedef enum {
     HOME_PAGE_HOME = 0,
-    HOME_PAGE_APPS,
-    HOME_PAGE_FOCUS,
+    HOME_PAGE_SPOTIFY,       // Spotify "Now Playing" (replaced the Apps placeholder)
+    HOME_PAGE_SETUP,         // phone setup for Wi-Fi and Spotify (replaced Focus)
+    HOME_PAGE_COUNT,
 } home_page_t;
 
 typedef enum {
@@ -221,10 +228,14 @@ typedef struct {
     home_page_t page;        // page to show after this key
     bool page_changed;
     bool sync_now;           // start an immediate time/weather sync
+    spot_cmd_t spot_cmd;     // player command to send (Spotify page)
+    int setup_step;          // -1 / +1: previous / next card (Setup page)
 } home_nav_result_t;
 
-// Home: UP -> Apps, OK -> Focus, DOWN -> sync now.
-// Apps / Focus: OK click or OK long press -> Home; UP / DOWN do nothing yet.
+// Home:    UP -> Spotify, OK -> Setup, DOWN -> sync now.
+// Spotify: UP -> previous track, DOWN -> next track, OK -> play/pause,
+//          OK long press -> Home.
+// Setup:   UP / DOWN -> previous / next QR card, OK (click or long) -> Home.
 home_nav_result_t home_nav_handle(home_page_t page, home_key_t key, home_key_ev_t ev);
 
 // ---------------------------------------------------------------------------
@@ -254,6 +265,13 @@ home_idle_result_t home_idle_key(home_idle_t *idle, bool is_press, bool is_relea
 // timeout_us <= 0 disables sleeping.
 bool home_idle_tick(home_idle_t *idle, int64_t now_us, int64_t timeout_us);
 
+// Whether to enter deep sleep (the "off" state; any key wakes and restarts the
+// app) after `idle_us` without a key. Never while Setup is open, and not while
+// a computer is connected over USB when `stay_on_usb` is set. timeout_us <= 0
+// disables deep sleep.
+bool home_deep_sleep_due(int64_t idle_us, int64_t timeout_us, bool setup_open, bool usb_host,
+                         bool stay_on_usb);
+
 // ---------------------------------------------------------------------------
 // Serial provisioning commands
 // ---------------------------------------------------------------------------
@@ -272,6 +290,10 @@ typedef enum {
     HOME_CMD_TZ_RESET,       // tz default
     HOME_CMD_CLOCK,          // clock 12|24
     HOME_CMD_SYNC,           // sync
+    HOME_CMD_SPOT_CLIENT,    // spotify client <32-hex client ID>
+    HOME_CMD_SPOT_TOKEN,     // spotify token <refresh token>
+    HOME_CMD_SPOT_CLEAR,     // spotify clear
+    HOME_CMD_SPOT_STATUS,    // spotify  |  spotify status
     HOME_CMD_ERROR,
 } home_cmd_type_t;
 
@@ -281,6 +303,7 @@ typedef struct {
     char password[HOME_PASS_MAX + 1];
     char tz[HOME_TZ_MAX + 1];
     bool twelve_hour;
+    char spot_arg[SPOT_REFRESH_MAX + 1];   // client ID or refresh token (secret; wipe after use)
     const char *error;       // static message when type == HOME_CMD_ERROR
 } home_cmd_t;
 

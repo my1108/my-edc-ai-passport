@@ -2,10 +2,12 @@
 //
 // Schedule (all on the monotonic clock, so it works before the wall clock is set):
 //   time sync   at every boot once Wi-Fi is up, then daily at CONFIG_HOME_SYNC_HOUR
-//               local time; after a failure, retry every hour.
+//               local time; after a failure, retry in 1 min, doubling up to 1 h.
 //   location    at boot and on "sync now"; daily after success, 30 min after failure.
 //   weather     every CONFIG_HOME_WEATHER_REFRESH_MIN; 10 min after a failure.
 //   DOWN key / "sync" command: all three immediately.
+//   Spotify     polls and player commands from spot_net.c while its page is
+//               open; see that file for the schedule.
 //
 // Memory: responses are read into one static 1.5 KB buffer (both providers
 // answer in well under 1 KB). TLS uses the ESP-IDF certificate bundle with
@@ -14,6 +16,7 @@
 #include "home_net.h"
 
 #include <inttypes.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -35,6 +38,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "home_store.h"
+#include "spot_net.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "home_net";
@@ -44,7 +48,9 @@ static const char *TAG = "home_net";
 #define EV_DISCONNECTED  BIT2
 #define EV_SYNC_NOW      BIT3
 #define EV_WIFI_CHANGED  BIT4
-#define EV_ALL (EV_STA_START | EV_GOT_IP | EV_DISCONNECTED | EV_SYNC_NOW | EV_WIFI_CHANGED)
+#define EV_KICK          BIT5
+#define EV_AP            BIT6
+#define EV_ALL (EV_STA_START | EV_GOT_IP | EV_DISCONNECTED | EV_SYNC_NOW | EV_WIFI_CHANGED | EV_KICK | EV_AP)
 
 #define NET_TASK_STACK     8192   // TLS handshake + HTTP client
 #define HTTP_BODY_MAX      1536
@@ -64,6 +70,12 @@ static home_cache_t s_cache;          // net task only
 static char s_body[HTTP_BODY_MAX];    // net task only
 static bool s_wifi_inited;
 static bool s_wifi_started;
+static bool s_ap_netif;               // AP netif created (once)
+static bool s_ap_active;              // net task only: hotspot applied
+// Requested hotspot state (s_lock).
+static bool s_ap_want;
+static char s_ap_ssid[33];
+static char s_ap_pass[65];
 
 // Survives a soft reset but not power loss; random at power-on, so a magic
 // value (not a bool) marks "SNTP has set the clock".
@@ -106,6 +118,22 @@ void home_net_wifi_changed(void) {
     if (s_events) xEventGroupSetBits(s_events, EV_WIFI_CHANGED);
 }
 
+void home_net_kick(void) {
+    if (s_events) xEventGroupSetBits(s_events, EV_KICK);
+}
+
+void home_net_set_setup_ap(bool on, const char *ssid, const char *password) {
+    if (!s_lock) return;
+    STATUS_UPDATE({
+        s_ap_want = on;
+        if (on) {
+            snprintf(s_ap_ssid, sizeof(s_ap_ssid), "%s", ssid ? ssid : "");
+            snprintf(s_ap_pass, sizeof(s_ap_pass), "%s", password ? password : "");
+        }
+    });
+    if (s_events) xEventGroupSetBits(s_events, EV_AP);
+}
+
 static void log_heap(const char *when) {
     ESP_LOGI(TAG, "heap %s: free=%u largest=%u min_ever=%u", when,
              (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
@@ -123,10 +151,13 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         xEventGroupSetBits(s_events, EV_STA_START);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        STATUS_UPDATE(s_status.wifi_connected = false);
+        STATUS_UPDATE({ s_status.wifi_connected = false; s_status.ip[0] = '\0'; });
         xEventGroupSetBits(s_events, EV_DISCONNECTED);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        STATUS_UPDATE(s_status.wifi_connected = true);
+        const ip_event_got_ip_t *got = data;
+        char ip[16] = "";
+        if (got) snprintf(ip, sizeof(ip), IPSTR, IP2STR(&got->ip_info.ip));
+        STATUS_UPDATE({ s_status.wifi_connected = true; memcpy(s_status.ip, ip, sizeof(ip)); });
         xEventGroupSetBits(s_events, EV_GOT_IP);
     }
 }
@@ -170,10 +201,17 @@ static bool wifi_reload(void) {
     home_settings_t settings;
     home_store_load_settings(&settings);
     bool configured = settings.ssid[0] != '\0';
-    STATUS_UPDATE({ s_status.wifi_configured = configured; s_status.wifi_connected = false; });
+    STATUS_UPDATE({
+        s_status.wifi_configured = configured;
+        s_status.wifi_connected = false;
+        s_status.ip[0] = '\0';
+        snprintf(s_status.ssid, sizeof(s_status.ssid), "%s", settings.ssid);
+    });
 
     if (!configured) {
-        if (s_wifi_started) {
+        if (s_wifi_started && s_ap_active) {
+            esp_wifi_disconnect();  // keep the setup hotspot up
+        } else if (s_wifi_started) {
             esp_wifi_disconnect();
             esp_wifi_stop();
             s_wifi_started = false;
@@ -197,6 +235,101 @@ static bool wifi_reload(void) {
     }
     memset(&settings, 0, sizeof(settings));
     return configured && s_wifi_started;
+}
+
+// Applies the requested setup-hotspot state. Returns true when it changed.
+static bool ap_apply(void) {
+    bool want;
+    char ssid[33], pass[65];
+    STATUS_UPDATE({
+        want = s_ap_want;
+        memcpy(ssid, s_ap_ssid, sizeof(ssid));
+        memcpy(pass, s_ap_pass, sizeof(pass));
+    });
+    if (want == s_ap_active) return false;
+
+    esp_err_t err = ESP_OK;
+    if (want) {
+        err = wifi_init_once();
+        if (err == ESP_OK && !s_ap_netif) {
+            if (esp_netif_create_default_wifi_ap()) {
+                s_ap_netif = true;
+            } else {
+                err = ESP_FAIL;
+            }
+        }
+        if (err == ESP_OK) err = esp_wifi_set_mode(WIFI_MODE_APSTA);
+        if (err == ESP_OK) {
+            wifi_config_t ap;
+            memset(&ap, 0, sizeof(ap));
+            size_t ssid_len = strnlen(ssid, sizeof(ap.ap.ssid));
+            memcpy(ap.ap.ssid, ssid, ssid_len);
+            ap.ap.ssid_len = (uint8_t)ssid_len;
+            memcpy(ap.ap.password, pass, strnlen(pass, sizeof(ap.ap.password)));
+            ap.ap.channel = 1;  // follows the station's channel once it connects
+            ap.ap.max_connection = 2;
+            ap.ap.authmode = pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+            ap.ap.pmf_cfg.required = false;
+            err = esp_wifi_set_config(WIFI_IF_AP, &ap);
+            memset(&ap, 0, sizeof(ap));
+        }
+        if (err == ESP_OK && !s_wifi_started) {
+            err = esp_wifi_start();
+            if (err == ESP_OK) s_wifi_started = true;
+        }
+    } else if (s_wifi_inited) {
+        home_status_t st;
+        home_net_get_status(&st);
+        if (st.wifi_configured) {
+            err = esp_wifi_set_mode(WIFI_MODE_STA);
+        } else if (s_wifi_started) {
+            esp_wifi_stop();
+            s_wifi_started = false;
+            err = esp_wifi_set_mode(WIFI_MODE_STA);
+        }
+    }
+    memset(pass, 0, sizeof(pass));
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "setup hotspot %s failed: %s", want ? "start" : "stop", esp_err_to_name(err));
+        return false;
+    }
+    s_ap_active = want;
+    STATUS_UPDATE(s_status.ap_on = want);
+    ESP_LOGI(TAG, "setup hotspot %s %s", want ? "on:" : "off", want ? ssid : "");
+    return true;
+}
+
+int home_net_scan(home_scan_ap_t *out, int max) {
+    if (!s_wifi_started || max <= 0) return -1;
+    wifi_scan_config_t cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.show_hidden = false;
+    if (esp_wifi_scan_start(&cfg, true) != ESP_OK) return -1;
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    if (n > 24) n = 24;
+    wifi_ap_record_t *recs = n ? calloc(n, sizeof(*recs)) : NULL;
+    if (n && !recs) {
+        esp_wifi_clear_ap_list();
+        return -1;
+    }
+    if (n) esp_wifi_scan_get_ap_records(&n, recs);
+    int count = 0;
+    for (int i = 0; i < n; i++) {  // records come strongest first
+        const char *name = (const char *)recs[i].ssid;
+        if (!name[0]) continue;
+        bool dup = false;
+        for (int j = 0; j < count; j++) {
+            if (strcmp(out[j].ssid, name) == 0) dup = true;
+        }
+        if (dup || count == max) continue;
+        snprintf(out[count].ssid, sizeof(out[count].ssid), "%s", name);
+        out[count].rssi = recs[i].rssi;
+        out[count].secure = recs[i].authmode != WIFI_AUTH_OPEN;
+        count++;
+    }
+    free(recs);
+    return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -278,7 +411,9 @@ static int32_t job_time_sync(void) {
     time_t now = time(NULL);
     ok = ok && home_time_is_valid((int64_t)now);
     if (ok) s_rtc_time_magic = RTC_TIME_MAGIC;
-    int32_t delay = home_time_sync_delay(ok, ok ? local_sec_of_day(now) : 0, CONFIG_HOME_SYNC_HOUR);
+    static int s_failures;  // consecutive failed syncs (net task only)
+    s_failures = ok ? 0 : s_failures + 1;
+    int32_t delay = home_time_sync_delay(ok, ok ? local_sec_of_day(now) : 0, CONFIG_HOME_SYNC_HOUR, s_failures);
     int64_t retry_at = now_us() + (int64_t)delay * US_PER_S;
     STATUS_UPDATE({
         s_status.sync_state = ok ? HOME_SYNC_OK : HOME_SYNC_FAILED;
@@ -376,11 +511,17 @@ static void net_task(void *arg) {
             next = time_due;
             if (geo_due < next) next = geo_due;
             if (weather_due < next) next = weather_due;
+            int64_t spot_due = spot_net_due_us(now);
+            if (spot_due < next) next = spot_due;
         }
         EventBits_t bits = xEventGroupWaitBits(s_events, EV_ALL, pdTRUE, pdFALSE,
                                                ticks_until(next, now));
         now = now_us();
 
+        if (bits & EV_AP) {
+            bool was_started = s_wifi_started;
+            if (ap_apply() && !was_started && s_wifi_started && wifi_on) connect_due = now;
+        }
         if (bits & EV_WIFI_CHANGED) {
             bool was_started = s_wifi_started;
             connected = false;
@@ -426,10 +567,16 @@ static void net_task(void *arg) {
             if (err != ESP_OK) ESP_LOGD(TAG, "esp_wifi_connect: %s", esp_err_to_name(err));
             connect_due = now + (int64_t)CONNECT_WATCHDOG_S * US_PER_S;
         }
-        if (!connected) continue;
+        if (!connected) {
+            spot_net_offline();
+            continue;
+        }
 
         if (now_us() >= time_due) {
             time_due = now_us() + (int64_t)job_time_sync() * US_PER_S;
+        }
+        if (now_us() >= geo_due || now_us() >= weather_due) {
+            spot_net_release();  // keep a single TLS session in memory
         }
         if (now_us() >= geo_due) {
             geo_due = now_us() + (int64_t)job_geolocate() * US_PER_S;
@@ -437,6 +584,9 @@ static void net_task(void *arg) {
         if (now_us() >= weather_due) {
             weather_due = now_us() + (int64_t)job_weather() * US_PER_S;
             log_heap("after weather");
+        }
+        if (now_us() >= spot_net_due_us(now_us())) {
+            spot_net_run(now_us());
         }
     }
 }
@@ -447,6 +597,7 @@ esp_err_t home_net_start(void) {
     s_events = xEventGroupCreate();
     if (!s_lock || !s_events) return ESP_ERR_NO_MEM;
 
+    spot_net_init();
     if (home_store_load_cache(&s_cache)) {
         s_status.have_weather = s_cache.have_weather;
         s_status.weather = s_cache.weather;

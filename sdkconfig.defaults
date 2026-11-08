@@ -27,6 +27,14 @@ CONFIG_LV_FONT_MONTSERRAT_20=y
 # Home screen: 28 px temperature / placeholder glyphs, 48 px clock (fonts live in flash).
 CONFIG_LV_FONT_MONTSERRAT_28=y
 CONFIG_LV_FONT_MONTSERRAT_48=y
+# Spotify page: fallback for CJK titles and artists. LVGL's built-in subset of
+# Source Han Sans SC (about 1,000 common Chinese characters, kana, ASCII); it
+# lives in flash. Characters outside it are shown as '?' (spot_text_for_font).
+CONFIG_LV_FONT_SOURCE_HAN_SANS_SC_16_CJK=y
+# Keep missing-glyph placeholders visible while developing (font checklist).
+CONFIG_LV_USE_FONT_PLACEHOLDER=y
+# Setup page: QR codes for the setup hotspot and the setup web page.
+CONFIG_LV_USE_QRCODE=y
 # LVGL 内置 malloc 池大小。它是独立静态区、不与系统堆共享,配大了会白白占用 RAM。
 # The home screen keeps three screens (~70 objects) alive; 24 KB is too tight
 # (see docs/reference/shinku-chen/lvgl-pool-and-glyph-coverage.md). LVGL 9.5's
@@ -41,7 +49,7 @@ CONFIG_FREERTOS_HZ=1000
 # and TLS on this no-PSRAM part.
 CONFIG_BT_ENABLED=n
 
-# --- HTTPS (geolocation + Open-Meteo) ---
+# --- HTTPS (geolocation, Open-Meteo, Spotify Web API) ---
 # Size TLS record buffers to the actual records and free certificate data after
 # the handshake, which lowers the peak heap of each HTTPS request on this
 # no-PSRAM part. home_net logs free heap around every request. Server certificates are checked with the ESP-IDF

@@ -47,6 +47,25 @@ menu "AI Passport Home Screen"
             screen; that key press only wakes it and triggers no action.
             Time, Wi-Fi, and weather keep running while the screen sleeps.
 
+    config HOME_DEEP_SLEEP_MIN
+        int "Deep sleep after this many minutes without a key (0 = never)"
+        range 0 1440
+        default 10
+        help
+            After this idle time the board turns Wi-Fi off and enters deep
+            sleep, drawing far less power than with only the screen off. Any
+            of UP, OK, or DOWN wakes it; the app then restarts (about 2-3 s to
+            the screen, a few more for Wi-Fi), and that key press does nothing
+            else. Setup never sleeps. The clock keeps counting in deep sleep.
+
+    config HOME_DEEP_SLEEP_STAY_ON_USB
+        bool "Stay awake while a computer is connected over USB"
+        default y
+        help
+            Skips deep sleep while the USB-Serial-JTAG port sees a USB host, so
+            a board on a computer (serial console, logs) stays on. A plain
+            USB charger is not a host, so a board on a charger still sleeps.
+
     config HOME_WEATHER_REFRESH_MIN
         int "Weather refresh interval (minutes)"
         range 5 180

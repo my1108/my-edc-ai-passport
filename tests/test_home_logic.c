@@ -102,8 +102,15 @@ static void test_schedule(void) {
     // Exactly 03:00 -> tomorrow, never zero (would loop).
     assert(home_delay_until_hour(3 * 3600, 3) == 86400);
     assert(home_delay_until_hour(3 * 3600 - 1, 3) == 1);
-    assert(home_time_sync_delay(true, 3600, 3) == 7200);
-    assert(home_time_sync_delay(false, 3600, 3) == 3600);
+    assert(home_time_sync_delay(true, 3600, 3, 0) == 7200);
+    // Failures back off from 1 min, doubling, capped at 1 h.
+    assert(home_time_sync_delay(false, 3600, 3, 1) == 60);
+    assert(home_time_sync_delay(false, 3600, 3, 2) == 120);
+    assert(home_time_sync_delay(false, 3600, 3, 3) == 240);
+    assert(home_time_sync_delay(false, 0, 3, 6) == 1920);
+    assert(home_time_sync_delay(false, 0, 3, 7) == HOME_SYNC_RETRY_S);
+    assert(home_time_sync_delay(false, 0, 3, 50) == HOME_SYNC_RETRY_S);
+    assert(home_time_sync_delay(false, 0, 3, 0) == HOME_SYNC_RETRY_MIN_S);  // defensive
     assert(home_weather_delay(true, 30) == 1800);
     assert(home_weather_delay(false, 30) == 600);
     assert(home_weather_delay(false, 5) == 300);
@@ -230,9 +237,9 @@ static void test_cache(void) {
 
 static void test_navigation(void) {
     home_nav_result_t r = home_nav_handle(HOME_PAGE_HOME, HOME_KEY_UP, HOME_KEY_EV_CLICK);
-    assert(r.page == HOME_PAGE_APPS && r.page_changed && !r.sync_now);
+    assert(r.page == HOME_PAGE_SPOTIFY && r.page_changed && !r.sync_now && r.spot_cmd == SPOT_CMD_NONE);
     r = home_nav_handle(HOME_PAGE_HOME, HOME_KEY_OK, HOME_KEY_EV_CLICK);
-    assert(r.page == HOME_PAGE_FOCUS && r.page_changed);
+    assert(r.page == HOME_PAGE_SETUP && r.page_changed && r.setup_step == 0);
     r = home_nav_handle(HOME_PAGE_HOME, HOME_KEY_DOWN, HOME_KEY_EV_CLICK);
     assert(r.page == HOME_PAGE_HOME && !r.page_changed && r.sync_now);
     r = home_nav_handle(HOME_PAGE_HOME, HOME_KEY_DOWN, HOME_KEY_EV_LONG);
@@ -240,14 +247,33 @@ static void test_navigation(void) {
     r = home_nav_handle(HOME_PAGE_HOME, HOME_KEY_OK, HOME_KEY_EV_OTHER);
     assert(!r.page_changed);
 
-    r = home_nav_handle(HOME_PAGE_APPS, HOME_KEY_OK, HOME_KEY_EV_CLICK);
+    // Spotify: UP previous, DOWN next, OK play/pause, hold OK home.
+    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_UP, HOME_KEY_EV_CLICK);
+    assert(r.spot_cmd == SPOT_CMD_PREV && !r.page_changed);
+    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_DOWN, HOME_KEY_EV_CLICK);
+    assert(r.spot_cmd == SPOT_CMD_NEXT && !r.page_changed);
+    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_OK, HOME_KEY_EV_CLICK);
+    assert(r.spot_cmd == SPOT_CMD_TOGGLE && !r.page_changed);
+    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_OK, HOME_KEY_EV_LONG);
+    assert(r.page == HOME_PAGE_HOME && r.page_changed && r.spot_cmd == SPOT_CMD_NONE);
+    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_UP, HOME_KEY_EV_LONG);
+    assert(r.page == HOME_PAGE_SPOTIFY && !r.page_changed && r.spot_cmd == SPOT_CMD_NONE);
+    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_DOWN, HOME_KEY_EV_OTHER);
+    assert(r.spot_cmd == SPOT_CMD_NONE && !r.sync_now);
+
+    // Setup: UP / DOWN change the QR card, OK goes home.
+    r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_OK, HOME_KEY_EV_CLICK);
     assert(r.page == HOME_PAGE_HOME && r.page_changed);
-    r = home_nav_handle(HOME_PAGE_FOCUS, HOME_KEY_OK, HOME_KEY_EV_LONG);
+    r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_OK, HOME_KEY_EV_LONG);
     assert(r.page == HOME_PAGE_HOME);
-    r = home_nav_handle(HOME_PAGE_FOCUS, HOME_KEY_DOWN, HOME_KEY_EV_CLICK);
-    assert(r.page == HOME_PAGE_FOCUS && !r.page_changed && !r.sync_now);
-    r = home_nav_handle(HOME_PAGE_APPS, HOME_KEY_UP, HOME_KEY_EV_CLICK);
-    assert(r.page == HOME_PAGE_APPS && !r.page_changed);
+    r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_DOWN, HOME_KEY_EV_CLICK);
+    assert(r.page == HOME_PAGE_SETUP && !r.page_changed && r.setup_step == 1 && !r.sync_now);
+    r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_UP, HOME_KEY_EV_CLICK);
+    assert(r.setup_step == -1 && r.spot_cmd == SPOT_CMD_NONE);
+    r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_UP, HOME_KEY_EV_LONG);
+    assert(r.setup_step == 0 && !r.page_changed);
+    r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_DOWN, HOME_KEY_EV_OTHER);
+    assert(r.setup_step == 0);
 }
 
 static void test_screen_sleep(void) {
@@ -291,6 +317,17 @@ static void test_screen_sleep(void) {
     // A zero timeout never sleeps.
     home_idle_init(&idle, 0);
     assert(!home_idle_tick(&idle, 3600 * S, 0));
+}
+
+static void test_deep_sleep(void) {
+    const int64_t M = 60LL * 1000000;
+    assert(!home_deep_sleep_due(9 * M, 10 * M, false, false, true));
+    assert(home_deep_sleep_due(10 * M, 10 * M, false, false, true));
+    assert(home_deep_sleep_due(60 * M, 10 * M, false, false, true));
+    assert(!home_deep_sleep_due(60 * M, 10 * M, true, false, true));   // Setup open
+    assert(!home_deep_sleep_due(60 * M, 10 * M, false, true, true));   // computer attached
+    assert(home_deep_sleep_due(60 * M, 10 * M, false, true, false));   // ...unless allowed
+    assert(!home_deep_sleep_due(60 * M, 0, false, false, true));       // disabled
 }
 
 static void test_commands(void) {
@@ -351,6 +388,55 @@ static void test_commands(void) {
     assert(c.type == HOME_CMD_ERROR);
 }
 
+static void test_spotify_commands(void) {
+    home_cmd_t c;
+    const char *token = "AQBx-7_example.refresh~token_0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+                        "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+    char line[400];
+
+    home_cmd_parse("spotify", &c);
+    assert(c.type == HOME_CMD_SPOT_STATUS);
+    home_cmd_parse("Spotify STATUS", &c);
+    assert(c.type == HOME_CMD_SPOT_STATUS);
+    home_cmd_parse("spotify clear", &c);
+    assert(c.type == HOME_CMD_SPOT_CLEAR);
+
+    home_cmd_parse("spotify client 0123456789abcdef0123456789ABCDEF", &c);
+    assert(c.type == HOME_CMD_SPOT_CLIENT && strcmp(c.spot_arg, "0123456789abcdef0123456789ABCDEF") == 0);
+    home_cmd_parse("spotify client 0123456789abcdef", &c);
+    assert(c.type == HOME_CMD_ERROR && c.error);
+    home_cmd_parse("spotify client 0123456789abcdef0123456789abcdeg", &c);
+    assert(c.type == HOME_CMD_ERROR);
+
+    snprintf(line, sizeof(line), "spotify token %s", token);
+    home_cmd_parse(line, &c);
+    assert(c.type == HOME_CMD_SPOT_TOKEN && strcmp(c.spot_arg, token) == 0);
+    snprintf(line, sizeof(line), "spotify token \"%s\"", token);  // quotes are fine too
+    home_cmd_parse(line, &c);
+    assert(c.type == HOME_CMD_SPOT_TOKEN && strcmp(c.spot_arg, token) == 0);
+    home_cmd_parse("spotify token short", &c);
+    assert(c.type == HOME_CMD_ERROR);
+    home_cmd_parse("spotify token abc/def+ghi=jklmnopqrstu", &c);
+    assert(c.type == HOME_CMD_ERROR);
+
+    // A token longer than SPOT_REFRESH_MAX is rejected, not truncated.
+    char longtok[SPOT_REFRESH_MAX + 2];
+    memset(longtok, 'a', sizeof(longtok) - 1);
+    longtok[sizeof(longtok) - 1] = 0;
+    snprintf(line, sizeof(line), "spotify token %s", longtok);
+    home_cmd_parse(line, &c);
+    assert(c.type == HOME_CMD_ERROR);
+
+    home_cmd_parse("spotify play", &c);
+    assert(c.type == HOME_CMD_ERROR);
+    home_cmd_parse("spotify client", &c);
+    assert(c.type == HOME_CMD_ERROR);
+
+    // Wi-Fi passwords still parse with the larger token buffer.
+    home_cmd_parse("wifi \"Home Net\" \"secret pass\"", &c);
+    assert(c.type == HOME_CMD_WIFI_SET && strcmp(c.password, "secret pass") == 0);
+}
+
 int main(void) {
     test_date_and_clock();
     test_sync_line();
@@ -361,7 +447,9 @@ int main(void) {
     test_cache();
     test_navigation();
     test_screen_sleep();
+    test_deep_sleep();
     test_commands();
+    test_spotify_commands();
     printf("home logic tests: PASS\n");
     return 0;
 }

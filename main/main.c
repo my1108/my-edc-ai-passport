@@ -1,16 +1,26 @@
 // main/main.c - AI Passport home screen: startup and key dispatch.
 //
 // Keys (see home_nav_handle in home_logic.c):
-//   Home        UP = Apps, OK = Focus, DOWN = sync time and weather now
-//   Apps/Focus  OK = back to Home
+//   Home        UP = Spotify, OK = Setup, DOWN = sync time and weather now
+//   Spotify     UP = previous track, DOWN = next track, OK = play/pause,
+//               hold OK = back to Home
+//   Setup       UP / DOWN = previous / next QR card, OK = back to Home.
+//               Opening Setup starts the setup hotspot and web page
+//               (setup_portal.c); leaving it stops them. Setup opens at boot
+//               when no Wi-Fi is saved, keeps the screen awake, and closes
+//               itself after SETUP_IDLE_US without a key or page activity.
 //   The screen sleeps after CONFIG_HOME_SCREEN_SLEEP_S without a key; the key
 //   that wakes it does nothing else (home_idle_key in home_logic.c).
+//   After CONFIG_HOME_DEEP_SLEEP_MIN without a key the board deep-sleeps
+//   ("off"): any function key wakes it and the app restarts; key_guard drops
+//   that key until it is released. See enter_deep_sleep().
 //
 // Button callbacks only enqueue. The input task maps keys to actions, switches
 // screens under the LVGL lock, and polls the battery gauge every 15 s. Network
 // work runs in home_net; serial provisioning in home_console.
 #include <string.h>
 
+#include "bsp_audio.h"
 #include "bsp_battery.h"
 #include "bsp_button.h"
 #include "bsp_display.h"
@@ -19,7 +29,9 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_sleep.h"
+#include "driver/usb_serial_jtag.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
@@ -30,6 +42,8 @@
 #include "home_ui.h"
 #include "key_guard.h"
 #include "lvgl.h"
+#include "setup_portal.h"
+#include "spot_net.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "main";
@@ -38,6 +52,15 @@ static const char *TAG = "main";
 #define BATTERY_POLL_US    (15LL * 1000 * 1000)
 #define SCREEN_SLEEP_US    ((int64_t)CONFIG_HOME_SCREEN_SLEEP_S * 1000 * 1000)
 #define BACKLIGHT_ON       80
+#define SETUP_IDLE_US      (15LL * 60 * 1000 * 1000)
+#define DEEP_SLEEP_US      ((int64_t)CONFIG_HOME_DEEP_SLEEP_MIN * 60 * 1000 * 1000)
+
+// A disabled Kconfig bool leaves its macro undefined.
+#ifdef CONFIG_HOME_DEEP_SLEEP_STAY_ON_USB
+#define DEEP_SLEEP_STAY_ON_USB true
+#else
+#define DEEP_SLEEP_STAY_ON_USB false
+#endif
 
 typedef struct {
     bsp_btn_t btn;
@@ -49,6 +72,8 @@ static volatile bool s_input_ready;
 static bool s_battery_ok;
 static home_page_t s_page = HOME_PAGE_HOME;   // input task only
 static home_idle_t s_idle;                    // input task only
+static bool s_awake = true;                   // input task only
+static int64_t s_setup_activity_us;           // input task only
 
 // A deep-sleep key wake reboots with the key still held; drop key actions until
 // it is released (key_guard.h). This firmware does not deep sleep yet, but the
@@ -77,12 +102,39 @@ static home_key_t map_key(bsp_btn_t btn) {
 // Screen sleep turns the backlight off and pauses the UI refresh; time, Wi-Fi,
 // and weather keep running so the screen is current when it wakes.
 static void screen_set_awake(bool awake) {
+    s_awake = awake;
+    // Spotify is polled only while its page is on a lit screen.
+    spot_set_active(awake && s_page == HOME_PAGE_SPOTIFY);
     if (bsp_lvgl_lock(500)) {
         home_ui_set_awake(awake);
         bsp_lvgl_unlock();
     }
     bsp_display_backlight(awake ? BACKLIGHT_ON : 0);
     ESP_LOGI(TAG, "screen %s", awake ? "on" : "asleep");
+}
+
+// Switches pages, starting and stopping the setup portal with its page.
+// Input task only (or app_main before the input task starts).
+static void go_to_page(home_page_t page) {
+    if (page == s_page) return;
+    setup_info_t info;
+    memset(&info, 0, sizeof(info));
+    if (s_page == HOME_PAGE_SETUP) setup_portal_stop();
+    if (page == HOME_PAGE_SETUP) {
+        esp_err_t err = setup_portal_start(&info);
+        if (err != ESP_OK) ESP_LOGE(TAG, "setup portal failed: %s", esp_err_to_name(err));
+        s_setup_activity_us = esp_timer_get_time();
+    }
+    if (bsp_lvgl_lock(500)) {
+        if (page == HOME_PAGE_SETUP) home_ui_setup_open(&info);
+        s_page = page;
+        spot_set_active(s_awake && s_page == HOME_PAGE_SPOTIFY);
+        home_ui_show(page);
+        bsp_lvgl_unlock();
+    } else {
+        s_page = page;
+    }
+    memset(&info, 0, sizeof(info));
 }
 
 static void process_input(const input_event_t *input) {
@@ -92,16 +144,63 @@ static void process_input(const input_event_t *input) {
     if (!idle.deliver) return;   // the waking key only wakes the screen
 
     home_nav_result_t r = home_nav_handle(s_page, map_key(input->btn), map_event(input->event));
+    if (s_page == HOME_PAGE_SETUP) s_setup_activity_us = esp_timer_get_time();
     if (r.sync_now) home_net_sync_now();
-    if (r.page_changed && bsp_lvgl_lock(500)) {
-        home_ui_show(r.page);
+    if (r.spot_cmd != SPOT_CMD_NONE) spot_send(r.spot_cmd);
+    if (r.setup_step && bsp_lvgl_lock(500)) {
+        home_ui_setup_step(r.setup_step);
         bsp_lvgl_unlock();
-        s_page = r.page;
     }
+    if (r.page_changed) go_to_page(r.page);
 }
 
 static void poll_battery(void) {
     home_ui_set_battery(s_battery_ok ? bsp_battery_soc() : -1);
+}
+
+static void deep_sleep_step(const char *step, esp_err_t err) {
+    if (err != ESP_OK) ESP_LOGW(TAG, "deep sleep: %s failed (%s); continuing", step, esp_err_to_name(err));
+}
+
+// Deep sleep after a long idle time. Same order as the BSP reference
+// (main/demo_low_power.c): hand the key pin back and arm it as the wake source,
+// then CW2017 -> ES8311 -> I2S -> shared I2C -> LCD. The key and bus releases
+// are terminal: if anything after them fails, restart rather than run on
+// without buttons or a display. Wake restarts the app with normal init.
+static void enter_deep_sleep(void) {
+    // A held key would wake the board at once (low-level wake); try later.
+    if (bsp_button_read_mv() < BSP_BTN_MV_RELEASED_MIN) {
+        s_idle.last_activity_us = esp_timer_get_time();
+        return;
+    }
+    ESP_LOGI(TAG, "idle for %d min: deep sleep (any key wakes)", CONFIG_HOME_DEEP_SLEEP_MIN);
+    s_input_ready = false;
+    spot_set_active(false);
+    // Leave the network cleanly; RF is powered down in deep sleep anyway.
+    esp_wifi_disconnect();
+    esp_wifi_stop();
+
+    int level = 0;
+    if (bsp_button_prepare_deep_sleep(&level) != ESP_OK) {
+        ESP_LOGE(TAG, "deep sleep: key hand-off failed; restarting");
+        esp_restart();
+    }
+    if (level != 1) ESP_LOGW(TAG, "deep sleep: key pressed while sleeping; it will wake at once");
+    deep_sleep_step("GPIO wake arm", esp_deep_sleep_enable_gpio_wakeup(1ULL << BSP_BTN_GPIO, ESP_GPIO_WAKEUP_GPIO_LOW));
+    // The gauge and the codec share I2C: suspend both before releasing the bus.
+    if (s_battery_ok) deep_sleep_step("CW2017 suspend", bsp_battery_sleep());
+    deep_sleep_step("ES8311 suspend", bsp_audio_sleep());
+    deep_sleep_step("I2S pin release", bsp_audio_prepare_deep_sleep());
+    deep_sleep_step("shared I2C pin release", bsp_i2c_prepare_deep_sleep());
+    // Wait for any LVGL flush to finish and keep LVGL off the panel from now on.
+    if (!bsp_lvgl_lock(1000)) {
+        ESP_LOGE(TAG, "deep sleep: LVGL busy; restarting");
+        esp_restart();
+    }
+    deep_sleep_step("ST7789 suspend", bsp_display_prepare_deep_sleep());
+    esp_deep_sleep_start();
+    ESP_LOGE(TAG, "deep sleep returned; restarting");
+    esp_restart();
 }
 
 static void input_task(void *arg) {
@@ -114,7 +213,21 @@ static void input_task(void *arg) {
             process_input(&input);
         }
         int64_t now = esp_timer_get_time();
-        if (home_idle_tick(&s_idle, now, SCREEN_SLEEP_US)) screen_set_awake(false);
+        // Keep the QR code visible while Setup is open.
+        int64_t sleep_us = s_page == HOME_PAGE_SETUP ? 0 : SCREEN_SLEEP_US;
+        if (home_idle_tick(&s_idle, now, sleep_us)) screen_set_awake(false);
+        if (home_deep_sleep_due(now - s_idle.last_activity_us, DEEP_SLEEP_US, s_page == HOME_PAGE_SETUP,
+                                usb_serial_jtag_is_connected(), DEEP_SLEEP_STAY_ON_USB)) {
+            enter_deep_sleep();
+        }
+        if (s_page == HOME_PAGE_SETUP) {
+            int64_t event_at = 0;
+            if (setup_portal_event(&event_at) && event_at > s_setup_activity_us) s_setup_activity_us = event_at;
+            if (now - s_setup_activity_us > SETUP_IDLE_US) {
+                ESP_LOGI(TAG, "setup idle; closing it");
+                go_to_page(HOME_PAGE_HOME);
+            }
+        }
         if (now >= next_battery) {
             poll_battery();
             next_battery = now + BATTERY_POLL_US;
@@ -166,6 +279,7 @@ void app_main(void) {
     home_apply_tz(settings.tz);
     ESP_LOGI(TAG, "timezone %s, %s-hour clock, Wi-Fi %s", settings.tz,
              settings.twelve_hour ? "12" : "24", settings.ssid[0] ? "configured" : "not configured");
+    bool need_setup = settings.ssid[0] == '\0';
     memset(&settings, 0, sizeof(settings));
 
     if (bsp_display_init() != ESP_OK || !bsp_lvgl_init()) {
@@ -186,6 +300,8 @@ void app_main(void) {
         home_ui_show(HOME_PAGE_HOME);
         bsp_lvgl_unlock();
     }
+    // First start (no Wi-Fi saved): go straight to the phone setup page.
+    if (need_setup) go_to_page(HOME_PAGE_SETUP);
     bsp_display_backlight(BACKLIGHT_ON);
 
     s_input_queue = xQueueCreate(INPUT_QUEUE_DEPTH, sizeof(input_event_t));

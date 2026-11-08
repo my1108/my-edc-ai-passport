@@ -25,6 +25,10 @@ typedef struct {
 
     bool have_location;
     char city[32];               // UTF-8 from the provider
+
+    char ip[16];                 // station IPv4 address while connected, else ""
+    char ssid[33];               // configured station SSID, "" when none
+    bool ap_on;                  // setup hotspot running
 } home_status_t;
 
 // Loads the cache and starts the worker. Call once after NVS is ready.
@@ -43,3 +47,26 @@ void home_net_sync_now(void);
 
 // Tells the worker that the stored Wi-Fi credentials changed.
 void home_net_wifi_changed(void);
+
+// Wakes the worker to re-check due work (used by spot_net.c).
+void home_net_kick(void);
+
+// Starts or stops the setup hotspot (Wi-Fi AP+STA) used by the phone setup
+// page. The station keeps running alongside it. Safe from any task; the
+// worker applies it. ssid/password are copied (password 8..63 characters).
+void home_net_set_setup_ap(bool on, const char *ssid, const char *password);
+
+#define HOME_SCAN_MAX 16
+
+typedef struct {
+    char ssid[33];
+    int8_t rssi;
+    bool secure;
+} home_scan_ap_t;
+
+// Scans for 2.4 GHz networks (blocks ~2-4 s; call from a task that may
+// block, never the LVGL task or a button callback). Needs Wi-Fi started, e.g.
+// with the setup hotspot on. Returns the count (strongest first, duplicates
+// merged), or -1 when a scan is not possible right now (for example while
+// the station is connecting).
+int home_net_scan(home_scan_ap_t *out, int max);
