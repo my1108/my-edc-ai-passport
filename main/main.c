@@ -3,6 +3,8 @@
 // Keys (see home_nav_handle in home_logic.c):
 //   Home        UP = Apps, OK = Focus, DOWN = sync time and weather now
 //   Apps/Focus  OK = back to Home
+//   The screen sleeps after CONFIG_HOME_SCREEN_SLEEP_S without a key; the key
+//   that wakes it does nothing else (home_idle_key in home_logic.c).
 //
 // Button callbacks only enqueue. The input task maps keys to actions, switches
 // screens under the LVGL lock, and polls the battery gauge every 15 s. Network
@@ -28,11 +30,14 @@
 #include "home_ui.h"
 #include "key_guard.h"
 #include "lvgl.h"
+#include "sdkconfig.h"
 
 static const char *TAG = "main";
 
 #define INPUT_QUEUE_DEPTH  8
 #define BATTERY_POLL_US    (15LL * 1000 * 1000)
+#define SCREEN_SLEEP_US    ((int64_t)CONFIG_HOME_SCREEN_SLEEP_S * 1000 * 1000)
+#define BACKLIGHT_ON       80
 
 typedef struct {
     bsp_btn_t btn;
@@ -43,6 +48,7 @@ static QueueHandle_t s_input_queue;
 static volatile bool s_input_ready;
 static bool s_battery_ok;
 static home_page_t s_page = HOME_PAGE_HOME;   // input task only
+static home_idle_t s_idle;                    // input task only
 
 // A deep-sleep key wake reboots with the key still held; drop key actions until
 // it is released (key_guard.h). This firmware does not deep sleep yet, but the
@@ -68,7 +74,23 @@ static home_key_t map_key(bsp_btn_t btn) {
     return HOME_KEY_OK;
 }
 
+// Screen sleep turns the backlight off and pauses the UI refresh; time, Wi-Fi,
+// and weather keep running so the screen is current when it wakes.
+static void screen_set_awake(bool awake) {
+    if (bsp_lvgl_lock(500)) {
+        home_ui_set_awake(awake);
+        bsp_lvgl_unlock();
+    }
+    bsp_display_backlight(awake ? BACKLIGHT_ON : 0);
+    ESP_LOGI(TAG, "screen %s", awake ? "on" : "asleep");
+}
+
 static void process_input(const input_event_t *input) {
+    home_idle_result_t idle = home_idle_key(&s_idle, input->event == BSP_BTN_PRESS,
+                                            input->event == BSP_BTN_RELEASE, esp_timer_get_time());
+    if (idle.woke) screen_set_awake(true);
+    if (!idle.deliver) return;   // the waking key only wakes the screen
+
     home_nav_result_t r = home_nav_handle(s_page, map_key(input->btn), map_event(input->event));
     if (r.sync_now) home_net_sync_now();
     if (r.page_changed && bsp_lvgl_lock(500)) {
@@ -86,11 +108,13 @@ static void input_task(void *arg) {
     (void)arg;
     int64_t next_battery = 0;
     input_event_t input;
+    home_idle_init(&s_idle, esp_timer_get_time());
     for (;;) {
         if (xQueueReceive(s_input_queue, &input, pdMS_TO_TICKS(1000)) == pdTRUE) {
             process_input(&input);
         }
         int64_t now = esp_timer_get_time();
+        if (home_idle_tick(&s_idle, now, SCREEN_SLEEP_US)) screen_set_awake(false);
         if (now >= next_battery) {
             poll_battery();
             next_battery = now + BATTERY_POLL_US;
@@ -162,7 +186,7 @@ void app_main(void) {
         home_ui_show(HOME_PAGE_HOME);
         bsp_lvgl_unlock();
     }
-    bsp_display_backlight(80);
+    bsp_display_backlight(BACKLIGHT_ON);
 
     s_input_queue = xQueueCreate(INPUT_QUEUE_DEPTH, sizeof(input_event_t));
     if (!s_input_queue ||

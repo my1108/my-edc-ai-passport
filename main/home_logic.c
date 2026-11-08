@@ -384,6 +384,47 @@ home_nav_result_t home_nav_handle(home_page_t page, home_key_t key, home_key_ev_
 }
 
 // ---------------------------------------------------------------------------
+// Screen sleep
+// ---------------------------------------------------------------------------
+
+void home_idle_init(home_idle_t *idle, int64_t now_us) {
+    idle->asleep = false;
+    idle->swallow = false;
+    idle->last_activity_us = now_us;
+}
+
+home_idle_result_t home_idle_key(home_idle_t *idle, bool is_press, bool is_release, int64_t now_us) {
+    home_idle_result_t r = { .deliver = false, .woke = false };
+    idle->last_activity_us = now_us;
+    if (idle->asleep) {
+        idle->asleep = false;
+        idle->swallow = !is_release;
+        r.woke = true;
+        return r;
+    }
+    if (idle->swallow) {
+        if (is_release) {
+            idle->swallow = false;
+            return r;
+        }
+        // A new press means the waking key's release was missed: treat it as
+        // a fresh interaction rather than leaving the keys dead.
+        if (!is_press) return r;
+        idle->swallow = false;
+    }
+    r.deliver = true;
+    return r;
+}
+
+bool home_idle_tick(home_idle_t *idle, int64_t now_us, int64_t timeout_us) {
+    if (idle->asleep || timeout_us <= 0) return false;
+    if (now_us - idle->last_activity_us < timeout_us) return false;
+    idle->asleep = true;
+    idle->swallow = false;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Serial provisioning commands
 // ---------------------------------------------------------------------------
 

@@ -21,6 +21,10 @@ replaces the baseline hardware-test menu at startup.
 
 On the Apps and Focus placeholder screens, `OK` returns home.
 
+After 30 seconds without a key press the screen sleeps (backlight off). Any
+key wakes it; that press only wakes the screen and does not open a page or
+start a sync. The clock, Wi-Fi, and weather keep running while it sleeps.
+
 The built-in Montserrat fonts have no middle dot (U+00B7) or ellipsis (U+2026),
 so the screen uses a bullet (U+2022) and three periods instead. City names are
 shown in ASCII; accented Latin letters lose their accents and other scripts
@@ -73,7 +77,8 @@ flash. Flashing the merged image may reset NVS and erase these settings; see
 
 `idf.py menuconfig` → **AI Passport Home Screen** sets the default timezone,
 default 12-hour mode, sync hour, SNTP server, geolocation URL, Open-Meteo base
-URL, and weather refresh interval.
+URL, screen sleep delay (`CONFIG_HOME_SCREEN_SLEEP_S`, 0 = never), and weather
+refresh interval.
 
 ## Code map
 

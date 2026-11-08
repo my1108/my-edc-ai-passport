@@ -38,6 +38,15 @@ menu "AI Passport Home Screen"
         string "Open-Meteo base URL"
         default "https://api.open-meteo.com"
 
+    config HOME_SCREEN_SLEEP_S
+        int "Screen sleep after this many seconds without a key (0 = never)"
+        range 0 3600
+        default 30
+        help
+            Turns the backlight off after this idle time. Any key wakes the
+            screen; that key press only wakes it and triggers no action.
+            Time, Wi-Fi, and weather keep running while the screen sleeps.
+
     config HOME_WEATHER_REFRESH_MIN
         int "Weather refresh interval (minutes)"
         range 5 180
