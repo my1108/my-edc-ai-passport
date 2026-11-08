@@ -52,6 +52,15 @@ typedef struct {
 static lv_obj_t *s_screens[HOME_PAGE_COUNT];
 static lv_timer_t *s_refresh_timer;
 static home_page_t s_shown = HOME_PAGE_HOME;
+static lv_obj_t *s_app_screen;          // the open app's screen, NULL when none
+static const home_app_t *s_app;         // the open app
+
+// Apps tray
+static lv_obj_t *s_tray_row[HOME_APPS_MAX];
+static lv_obj_t *s_tray_battery;
+static char s_tray_battery_text[24];
+static int s_tray_battery_color = -1;
+static int s_tray_sel;
 static uint32_t s_tick;
 
 // Home screen widgets
@@ -286,7 +295,7 @@ static void build_home(void) {
     lv_label_set_long_mode(s_sync, LV_LABEL_LONG_DOT);
 
     static const char *const keys[3] = { "UP", "OK", "DOWN" };
-    static const char *const actions[3] = { "Spotify", "Setup", "Sync now" };
+    static const char *const actions[3] = { "Apps", "Setup", "Sync now" };
     build_hints(scr, keys, actions, NULL);
 }
 
@@ -300,8 +309,28 @@ static lv_obj_t *make_center_label(lv_obj_t *parent, const lv_font_t *font, uint
     return l;
 }
 
-static void build_spotify(void) {
-    lv_obj_t *scr = s_screens[HOME_PAGE_SPOTIFY] = make_screen();
+static void spotify_cache_reset(void) {
+    s_drawn.sp_battery[0] = '\0';
+    s_drawn.sp_battery_color = -1;
+    s_drawn.sp_mode = -1;
+    s_drawn.sp_state[0] = '\0';
+    s_drawn.sp_state_color = -1;
+    s_drawn.sp_pos[0] = s_drawn.sp_len[0] = '\0';
+    s_drawn.sp_msg_title[0] = s_drawn.sp_msg_detail[0] = '\0';
+    s_drawn.sp_foot[0] = s_drawn.sp_ok[0] = '\0';
+    s_drawn.sp_foot_color = -1;
+    s_drawn.sp_msg_color = -1;
+    s_drawn.sp_fill_w = -1;
+    s_drawn.sp_eq_live = -1;
+    s_drawn.sp_cover_shown = -1;
+    s_drawn.sp_cover_seq = UINT32_MAX;
+    s_drawn.sp_raw_title[0] = '\x01';
+    s_drawn.sp_raw_artist[0] = '\x01';
+}
+
+void home_ui_spotify_build(lv_obj_t *scr) {
+    memset(&s_sp, 0, sizeof(s_sp));
+    spotify_cache_reset();
 
     s_font_title = lv_font_montserrat_20;
     s_font_title.fallback = &lv_font_source_han_sans_sc_16_cjk;
@@ -629,7 +658,7 @@ static void refresh_eq(bool live) {
 // Called by the Spotify worker before it overwrites the cover pixels.
 static bool cover_detach(void) {
     if (!bsp_lvgl_lock(500)) return false;
-    lv_obj_add_flag(s_sp.cover, LV_OBJ_FLAG_HIDDEN);
+    if (s_sp.cover) lv_obj_add_flag(s_sp.cover, LV_OBJ_FLAG_HIDDEN);  // NULL: app closed
     lv_image_cache_drop(&s_cover_dsc);
     s_drawn.sp_cover_shown = -1;
     s_drawn.sp_cover_seq = UINT32_MAX;
@@ -737,7 +766,7 @@ static void refresh_spotify(const home_status_t *st, int64_t now_us) {
     set_text(s_sp.ok_action, s_drawn.sp_ok, sizeof(s_drawn.sp_ok), playing ? "Pause" : "Play");
 
     // Footer: a recent command error, then "Sending...", else the way home.
-    const char *foot = "Hold OK for home";
+    const char *foot = "Hold OK for apps";
     uint32_t foot_color = C_DIM;
     if (sp.toast && now_us - sp.toast_at_us < TOAST_US) {
         foot = sp.toast;
@@ -748,6 +777,108 @@ static void refresh_spotify(const home_status_t *st, int64_t now_us) {
     }
     set_text(s_sp.foot, s_drawn.sp_foot, sizeof(s_drawn.sp_foot), foot);
     set_color_cached(s_sp.foot, &s_drawn.sp_foot_color, foot_color);
+}
+
+void home_ui_spotify_refresh(int64_t now_us) {
+    home_status_t st;
+    home_net_get_status(&st);
+    refresh_spotify(&st, now_us);
+}
+
+void home_ui_spotify_destroy(void) {
+    // The screen (and every widget on it) is deleted right after this.
+    lv_image_cache_drop(&s_cover_dsc);
+    memset(&s_sp, 0, sizeof(s_sp));
+}
+
+// ---------------------------------------------------------------------------
+// Apps tray
+// ---------------------------------------------------------------------------
+
+static void tray_style_row(lv_obj_t *row, bool selected) {
+    lv_obj_set_style_bg_color(row, lv_color_hex(selected ? 0x1E2632 : C_CARD), 0);
+    lv_obj_set_style_border_width(row, selected ? 2 : 0, 0);
+}
+
+static void build_tray(void) {
+    lv_obj_t *scr = s_screens[HOME_PAGE_APPS] = make_screen();
+
+    lv_obj_t *head = make_label(scr, &lv_font_montserrat_14, C_ACCENT);
+    lv_label_set_text(head, LV_SYMBOL_LIST "  APPS");
+    lv_obj_set_pos(head, HOME_GUTTER + 4, HOME_STATUS_TEXT_Y);
+    s_tray_battery = make_label(scr, &lv_font_montserrat_14, C_MUTED);
+    lv_obj_align(s_tray_battery, LV_ALIGN_TOP_RIGHT, -(HOME_GUTTER + 4), HOME_STATUS_TEXT_Y);
+    lv_obj_t *rule = make_box(scr, C_DIVIDER, 0);
+    set_box(rule, HOME_GUTTER, HOME_STATUS_H, HOME_SCREEN_W - 2 * HOME_GUTTER, 1);
+
+    for (int i = 0; i < HOME_APP_COUNT && i < HOME_APPS_MAX; i++) {
+        const home_app_t *app = &HOME_APPS[i];
+        lv_obj_t *row = s_tray_row[i] = make_box(scr, C_CARD, 12);
+        set_box(row, TRAY_ROW_X, TRAY_ROW_Y0 + i * TRAY_ROW_PITCH, TRAY_ROW_W, TRAY_ROW_H);
+        lv_obj_set_style_border_color(row, lv_color_hex(C_ACCENT), 0);
+        tray_style_row(row, i == 0);
+
+        lv_obj_t *icon = make_label(row, &lv_font_montserrat_20, C_ACCENT);
+        lv_label_set_text(icon, app->icon);
+        lv_obj_set_width(icon, 32);
+        lv_obj_set_style_text_align(icon, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(icon, LV_ALIGN_LEFT_MID, 8, 0);
+
+        lv_obj_t *name = make_label(row, &lv_font_montserrat_20, C_TEXT);
+        lv_label_set_text(name, app->name);
+        lv_obj_set_pos(name, 48, 7);
+        lv_obj_t *sub = make_label(row, &lv_font_montserrat_14, C_MUTED);
+        lv_label_set_text(sub, app->subtitle);
+        lv_obj_set_pos(sub, 48, 32);
+        lv_obj_set_width(sub, TRAY_ROW_W - 56);
+        lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
+    }
+
+    lv_obj_t *foot = make_label(scr, &lv_font_montserrat_14, C_DIM);
+    lv_label_set_text(foot, "Hold OK for home");
+    lv_obj_set_width(foot, HOME_SCREEN_W - 2 * HOME_GUTTER);
+    lv_obj_set_style_text_align(foot, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(foot, HOME_GUTTER, TRAY_FOOT_Y);
+
+    static const char *const keys[3] = { "UP", "OK", "DOWN" };
+    static const char *const actions[3] = { "Up", "Open", "Down" };
+    build_hints(scr, keys, actions, NULL);
+}
+
+void home_ui_tray_select(int index) {
+    if (index == s_tray_sel) return;
+    if (s_tray_sel >= 0 && s_tray_sel < HOME_APPS_MAX && s_tray_row[s_tray_sel]) {
+        tray_style_row(s_tray_row[s_tray_sel], false);
+    }
+    s_tray_sel = index;
+    if (index >= 0 && index < HOME_APPS_MAX && s_tray_row[index]) tray_style_row(s_tray_row[index], true);
+}
+
+void home_ui_app_open(const home_app_t *app) {
+    if (s_app_screen || !app || !app->build) return;
+    s_app_screen = make_screen();
+    s_app = app;
+    app->build(s_app_screen);
+    s_shown = HOME_PAGE_APP;
+    lv_screen_load(s_app_screen);
+    if (app->refresh) app->refresh(esp_timer_get_time());  // first frame is current
+}
+
+void home_ui_app_close(home_page_t next) {
+    home_ui_show(next);  // the app's screen must not be active when deleted
+    if (!s_app_screen) return;
+    if (s_app && s_app->destroy) s_app->destroy();
+    lv_obj_delete(s_app_screen);
+    s_app_screen = NULL;
+    s_app = NULL;
+}
+
+void home_ui_mem(uint32_t *total, uint32_t *used, uint32_t *max_used) {
+    lv_mem_monitor_t mon;
+    lv_mem_monitor(&mon);
+    if (total) *total = (uint32_t)mon.total_size;
+    if (used) *used = (uint32_t)(mon.total_size - mon.free_size);
+    if (max_used) *max_used = (uint32_t)mon.max_used;
 }
 
 // ---------------------------------------------------------------------------
@@ -853,8 +984,12 @@ static void refresh_cb(lv_timer_t *timer) {
     home_net_get_status(&st);
     s_tick++;
 
-    if (s_shown == HOME_PAGE_SPOTIFY) {
-        refresh_spotify(&st, now_us);
+    if (s_shown == HOME_PAGE_APP) {
+        if (s_app && s_app->refresh) s_app->refresh(now_us);
+        return;
+    }
+    if (s_shown == HOME_PAGE_APPS) {
+        draw_battery(s_tray_battery, s_tray_battery_text, sizeof(s_tray_battery_text), &s_tray_battery_color);
         return;
     }
     if (s_shown == HOME_PAGE_SETUP) {
@@ -878,24 +1013,14 @@ void home_ui_create(void) {
     s_drawn.sky = -1;
     s_drawn.weather_fresh = -1;
     s_drawn.clock[0] = '\x01';  // force the first layout pass
-    s_drawn.sp_battery_color = -1;
-    s_drawn.sp_mode = -1;
-    s_drawn.sp_state_color = -1;
-    s_drawn.sp_foot_color = -1;
-    s_drawn.sp_msg_color = -1;
-    s_drawn.sp_fill_w = -1;
-    s_drawn.sp_eq_live = -1;
-    s_drawn.sp_cover_shown = -1;
-    s_drawn.sp_cover_seq = UINT32_MAX;
-    s_drawn.sp_raw_title[0] = '\x01';
-    s_drawn.sp_raw_artist[0] = '\x01';
+    spotify_cache_reset();
 
     s_su.battery_color = -1;
     s_su.status_color = -1;
     s_su.card_count = -1;
 
     build_home();
-    build_spotify();
+    build_tray();
     build_setup();
     spot_set_cover_detach(cover_detach);
     refresh_cb(NULL);

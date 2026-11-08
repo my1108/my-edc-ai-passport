@@ -6,7 +6,11 @@
 
 The Spotify page of the [home screen](home-screen.md) shows the track playing
 on your Spotify account and lets the three buttons control playback. Press
-`UP` on the home screen to open it.
+`UP` on the home screen to open the Apps tray, then `OK` on **Spotify**.
+Spotify is polled only while this page is open and the screen is on; leaving
+the app stops polling and frees its screen and cover memory, while playback
+carries on in your Spotify app. Reopening it shows `Loading` for a moment if
+the last reading is more than 30 seconds old.
 
 ## Screen and keys
 
@@ -19,7 +23,7 @@ on your Spotify account and lets the three buttons control playback. Press
 | Title | Up to two lines, cut with `...` |
 | Artist | Up to three artists (or the podcast name), one line |
 | Progress | Bar plus elapsed and total time (`1:23` / `3:45`), advanced locally between polls |
-| Footer | `Hold OK for home`; `Sending...` while a command is in flight; a command error such as `No active device` for 3 s |
+| Footer | `Hold OK for apps`; `Sending...` while a command is in flight; a command error such as `No active device` for 3 s |
 | Key hints | `UP` Prev, `OK` Play or Pause, `DOWN` Next |
 
 | Key | Action |
@@ -27,7 +31,7 @@ on your Spotify account and lets the three buttons control playback. Press
 | `UP` click | Previous track (`POST /v1/me/player/previous`) |
 | `DOWN` click | Next track (`POST /v1/me/player/next`) |
 | `OK` click | Pause when playing, otherwise resume (`PUT /v1/me/player/pause` or `/play`) |
-| `OK` long press | Back to the home screen |
+| `OK` long press | Back to the Apps tray |
 
 A quick double press counts as one press, as elsewhere on the home screen. The
 screen still sleeps after 30 seconds without a key; the key that wakes it does
@@ -117,7 +121,7 @@ spotify client <client ID>
 spotify token <refresh token>
 ```
 
-Then press `UP` on the home screen. Type `spotify` in the console to see the
+Then open Apps (`UP` on the home screen) and choose Spotify. Type `spotify` in the console to see the
 link state, the last poll result, and the current track in full UTF-8.
 
 | Command | Effect |

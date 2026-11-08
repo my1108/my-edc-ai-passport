@@ -4,7 +4,7 @@
 
 # Spotify 正在播放
 
-[主屏](home-screen.zh_CN.md)的 Spotify 页面显示你的 Spotify 账号正在播放的曲目，并用三个按键控制播放。在主屏按 `UP` 打开该页面。
+[主屏](home-screen.zh_CN.md)的 Spotify 页面显示你的 Spotify 账号正在播放的曲目，并用三个按键控制播放。在主屏按 `UP` 打开应用列表，再在 **Spotify** 上按 `OK`。只有该页面打开且屏幕亮着时才轮询 Spotify；离开应用会停止轮询，并释放其界面和封面内存，而播放在你的 Spotify 应用中继续。若最近一次读数超过 30 秒，重新打开时会先短暂显示 `Loading`。
 
 ## 界面与按键
 
@@ -17,7 +17,7 @@
 | 标题 | 最多两行，超出部分以 `...` 截断 |
 | 艺人 | 最多三位艺人（播客则显示节目名），一行 |
 | 进度 | 进度条加已播放时间和总时长（`1:23` / `3:45`），两次轮询之间在本地推进 |
-| 底部行 | `Hold OK for home`；命令发送中显示 `Sending...`；命令出错时显示 3 秒错误，如 `No active device` |
+| 底部行 | `Hold OK for apps`；命令发送中显示 `Sending...`；命令出错时显示 3 秒错误，如 `No active device` |
 | 按键提示 | `UP` Prev、`OK` Play 或 Pause、`DOWN` Next |
 
 | 按键 | 动作 |
@@ -25,7 +25,7 @@
 | 短按 `UP` | 上一首（`POST /v1/me/player/previous`） |
 | 短按 `DOWN` | 下一首（`POST /v1/me/player/next`） |
 | 短按 `OK` | 正在播放时暂停，否则继续播放（`PUT /v1/me/player/pause` 或 `/play`） |
-| 长按 `OK` | 返回主屏 |
+| 长按 `OK` | 返回应用列表 |
 
 与主屏其他页面一样，快速双击按一次处理。30 秒无按键后屏幕仍会休眠；唤醒屏幕的那次按键不触发其他动作。
 
@@ -81,7 +81,7 @@ spotify client <client ID>
 spotify token <refresh token>
 ```
 
-之后在主屏按 `UP`。在控制台输入 `spotify` 可查看关联状态、最近一次轮询结果，以及完整 UTF-8 的当前曲目。
+之后打开应用列表（主屏按 `UP`）并选择 Spotify。在控制台输入 `spotify` 可查看关联状态、最近一次轮询结果，以及完整 UTF-8 的当前曲目。
 
 | 命令 | 作用 |
 | --- | --- |

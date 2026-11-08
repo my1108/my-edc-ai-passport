@@ -14,7 +14,9 @@
 #include "freertos/task.h"
 #include "home_logic.h"
 #include "home_net.h"
+#include "bsp_display.h"
 #include "home_store.h"
+#include "home_ui.h"
 #include "spot_net.h"
 #include "sdkconfig.h"
 
@@ -78,10 +80,19 @@ static void print_status(void) {
     } else {
         printf("Weather  : none yet\n");
     }
-    printf("Heap     : free %u, largest block %u, minimum ever %u\n\n",
+    printf("Heap     : free %u, largest block %u, minimum ever %u\n",
            (unsigned)heap_caps_get_free_size(MALLOC_CAP_8BIT),
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
+    uint32_t total = 0, used = 0, max_used = 0;
+    if (bsp_lvgl_lock(200)) {
+        home_ui_mem(&total, &used, &max_used);
+        bsp_lvgl_unlock();
+        printf("LVGL pool: %u of %u bytes used, high-water %u\n\n", (unsigned)used, (unsigned)total,
+               (unsigned)max_used);
+    } else {
+        printf("LVGL pool: busy\n\n");
+    }
     memset(&settings, 0, sizeof(settings));
 }
 
@@ -196,7 +207,7 @@ static void handle_line(const char *line) {
     case HOME_CMD_SPOT_TOKEN:
         err = home_store_save_spotify_token(cmd.spot_arg);
         if (err == ESP_OK) {
-            printf("Saved Spotify refresh token (hidden). Press UP on the home screen.\n");
+            printf("Saved Spotify refresh token (hidden). Open Apps (UP) and choose Spotify.\n");
             spot_link_changed();
         }
         break;

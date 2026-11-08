@@ -98,6 +98,23 @@ _Static_assert(SPOT_COVER_Y >= SPOT_STATE_Y + SPOT_STATE_H + 4, "cover overlaps 
 _Static_assert(SPOT_TITLE_Y >= SPOT_COVER_Y + SPOT_COVER_BOX + 8, "title overlaps cover");
 
 // ---------------------------------------------------------------------------
+// Apps tray: one row per app (icon, name, subtitle), then a footer hint.
+// ---------------------------------------------------------------------------
+
+#define TRAY_ROW_X        12
+#define TRAY_ROW_W        (HOME_SCREEN_W - 2 * TRAY_ROW_X)
+#define TRAY_ROW_Y0       40
+#define TRAY_ROW_H        56
+#define TRAY_ROW_PITCH    64
+#define TRAY_ROWS         3     // HOME_APPS_MAX in home_apps.h
+#define TRAY_FOOT_Y       256
+
+_Static_assert(TRAY_ROW_Y0 >= HOME_STATUS_H + 8, "tray rows overlap status bar");
+_Static_assert(TRAY_ROW_Y0 + (TRAY_ROWS - 1) * TRAY_ROW_PITCH + TRAY_ROW_H + 8 <= TRAY_FOOT_Y,
+               "tray rows overlap footer");
+_Static_assert(TRAY_FOOT_Y + 18 <= HOME_HINTS_Y, "tray footer overlaps hints");
+
+// ---------------------------------------------------------------------------
 // Setup page: heading, QR code in a white quiet-zone box, two text lines,
 // a status line, and the button hints.
 // ---------------------------------------------------------------------------

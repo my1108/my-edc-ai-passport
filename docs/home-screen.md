@@ -17,11 +17,28 @@ replaces the baseline hardware-test menu at startup.
 | Clock | Large `HH:MM` with small seconds; 24-hour by default, optional 12-hour with AM/PM |
 | Weather card | Icon (clear, partly cloudy, cloudy, fog, rain, snow, storm; moon variants at night), temperature in °C, condition, and `City • H xx° L xx°` |
 | Sync line | `Time synced today • HH:MM`, `Syncing time...`, or `Sync failed • retrying in 1 min` in orange |
-| Key hints | `UP` Spotify, `OK` Setup, `DOWN` Sync now |
+| Key hints | `UP` Apps, `OK` Setup, `DOWN` Sync now |
 
-`UP` opens the Spotify [Now Playing page](spotify.md), where `UP`, `OK`, and
-`DOWN` control playback and holding `OK` returns home. `OK` opens
+`UP` opens the **Apps** tray. Choose an app with `UP` and `DOWN` (the
+selection stops at the first and last entry instead of wrapping) and open it
+with `OK`. Holding `OK` always goes back one level: from an app to the tray,
+and from the tray to the home screen. The tray lists only installed apps; today
+that is [Spotify Now Playing](spotify.md). `OK` opens
 [Setup](#setup-from-a-phone), where a phone sets up Wi-Fi and Spotify.
+
+| Where | `UP` | `DOWN` | `OK` click | `OK` hold |
+| --- | --- | --- | --- | --- |
+| Home | Apps tray | Sync now | Setup | - |
+| Apps tray | Previous entry | Next entry | Open the app | Home |
+| Spotify | Previous track | Next track | Play / pause | Apps tray |
+| Setup | Previous QR card | Next QR card | Home | Home |
+
+An app's screen exists only while the app is open. Opening it builds the
+screen; leaving it first stops the app's services (Spotify stops polling) and
+then deletes the screen, so only one app uses LVGL memory at a time. Adding an
+app is one entry in `HOME_APPS` (`main/home_apps.c`): name, icon, subtitle, and
+the build, refresh, destroy, start/stop, and key hooks. The tray has room for
+three apps (`HOME_APPS_MAX`).
 
 After 30 seconds without a key press the screen sleeps (backlight off). Any
 key wakes it; that press only wakes the screen and does not open a page or
@@ -136,7 +153,8 @@ refresh interval.
 | File | Role |
 | --- | --- |
 | `main/main.c` | Startup, key queue, battery polling |
-| `main/home_ui.c` | Home, Spotify, and Setup screens; 250 ms refresh timer |
+| `main/home_ui.c` | Home, Apps tray, Spotify, and Setup screens; 250 ms refresh timer |
+| `main/home_apps.c`, `main/home_apps.h` | App registry for the tray and the app lifecycle hooks |
 | `main/home_net.c` | Wi-Fi station, SNTP, geolocation, weather worker task |
 | `main/home_store.c` | NVS settings and cache |
 | `main/home_console.c` | USB serial command console |
