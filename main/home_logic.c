@@ -118,8 +118,11 @@ int32_t home_delay_until_hour(int32_t local_sec_of_day, int hour) {
     return delay;
 }
 
-int32_t home_time_sync_delay(bool success, int32_t local_sec_of_day, int hour) {
-    return success ? home_delay_until_hour(local_sec_of_day, hour) : HOME_SYNC_RETRY_S;
+int32_t home_time_sync_delay(bool success, int32_t local_sec_of_day, int hour, int failures) {
+    if (success) return home_delay_until_hour(local_sec_of_day, hour);
+    int32_t delay = HOME_SYNC_RETRY_MIN_S;
+    for (int i = 1; i < failures && delay < HOME_SYNC_RETRY_S; i++) delay *= 2;
+    return delay > HOME_SYNC_RETRY_S ? HOME_SYNC_RETRY_S : delay;
 }
 
 int32_t home_weather_delay(bool success, int refresh_min) {
@@ -364,20 +367,33 @@ bool home_cache_decode(const home_cache_blob_t *blob, home_cache_t *cache) {
 // ---------------------------------------------------------------------------
 
 home_nav_result_t home_nav_handle(home_page_t page, home_key_t key, home_key_ev_t ev) {
-    home_nav_result_t r = { .page = page, .page_changed = false, .sync_now = false };
+    home_nav_result_t r = { .page = page, .page_changed = false, .sync_now = false,
+                            .spot_cmd = SPOT_CMD_NONE, .setup_step = 0 };
     if (ev == HOME_KEY_EV_OTHER) return r;
 
-    if (page == HOME_PAGE_HOME) {
+    if (page == HOME_PAGE_SPOTIFY) {
+        if (key == HOME_KEY_OK && ev == HOME_KEY_EV_LONG) {
+            r.page = HOME_PAGE_HOME;
+        } else if (ev == HOME_KEY_EV_CLICK) {
+            r.spot_cmd = key == HOME_KEY_UP ? SPOT_CMD_PREV
+                       : key == HOME_KEY_DOWN ? SPOT_CMD_NEXT
+                       : SPOT_CMD_TOGGLE;
+        }
+    } else if (page == HOME_PAGE_HOME) {
         if (ev != HOME_KEY_EV_CLICK) return r;
         if (key == HOME_KEY_UP) {
-            r.page = HOME_PAGE_APPS;
+            r.page = HOME_PAGE_SPOTIFY;
         } else if (key == HOME_KEY_OK) {
-            r.page = HOME_PAGE_FOCUS;
+            r.page = HOME_PAGE_SETUP;
         } else if (key == HOME_KEY_DOWN) {
             r.sync_now = true;
         }
-    } else if (key == HOME_KEY_OK) {
-        r.page = HOME_PAGE_HOME;
+    } else if (page == HOME_PAGE_SETUP) {
+        if (key == HOME_KEY_OK) {
+            r.page = HOME_PAGE_HOME;
+        } else if (ev == HOME_KEY_EV_CLICK) {
+            r.setup_step = key == HOME_KEY_UP ? -1 : 1;
+        }
     }
     r.page_changed = r.page != page;
     return r;
@@ -424,12 +440,21 @@ bool home_idle_tick(home_idle_t *idle, int64_t now_us, int64_t timeout_us) {
     return true;
 }
 
+bool home_deep_sleep_due(int64_t idle_us, int64_t timeout_us, bool setup_open, bool usb_host,
+                         bool stay_on_usb) {
+    if (timeout_us <= 0 || idle_us < timeout_us) return false;
+    if (setup_open) return false;
+    if (stay_on_usb && usb_host) return false;
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Serial provisioning commands
 // ---------------------------------------------------------------------------
 
 #define CMD_MAX_TOKENS 4
-#define CMD_TOKEN_MAX  (HOME_PASS_MAX + 1)
+// Long enough for a Wi-Fi password and for a Spotify refresh token.
+#define CMD_TOKEN_MAX  (SPOT_REFRESH_MAX > HOME_PASS_MAX + 1 ? SPOT_REFRESH_MAX : HOME_PASS_MAX + 1)
 
 typedef struct {
     int count;
@@ -501,80 +526,107 @@ static void set_error(home_cmd_t *out, const char *message) {
     out->error = message;
 }
 
-void home_cmd_parse(const char *line, home_cmd_t *out) {
-    memset(out, 0, sizeof(*out));
-    tokens_t t;
-    tokenize(line ? line : "", &t);
-    if (t.error) {
-        set_error(out, t.error);
+static void parse_tokens(const tokens_t *t, home_cmd_t *out) {
+    if (t->error) {
+        set_error(out, t->error);
         return;
     }
-    if (t.count == 0) {
+    if (t->count == 0) {
         out->type = HOME_CMD_NONE;
         return;
     }
 
-    const char *cmd = t.tok[0];
+    const char *cmd = t->tok[0];
     if (word_is(cmd, "help") || strcmp(cmd, "?") == 0) {
-        out->type = t.count == 1 ? HOME_CMD_HELP : HOME_CMD_ERROR;
-        if (t.count != 1) out->error = "help takes no arguments";
+        out->type = t->count == 1 ? HOME_CMD_HELP : HOME_CMD_ERROR;
+        if (t->count != 1) out->error = "help takes no arguments";
     } else if (word_is(cmd, "status")) {
-        out->type = t.count == 1 ? HOME_CMD_STATUS : HOME_CMD_ERROR;
-        if (t.count != 1) out->error = "status takes no arguments";
+        out->type = t->count == 1 ? HOME_CMD_STATUS : HOME_CMD_ERROR;
+        if (t->count != 1) out->error = "status takes no arguments";
     } else if (word_is(cmd, "sync")) {
-        out->type = t.count == 1 ? HOME_CMD_SYNC : HOME_CMD_ERROR;
-        if (t.count != 1) out->error = "sync takes no arguments";
+        out->type = t->count == 1 ? HOME_CMD_SYNC : HOME_CMD_ERROR;
+        if (t->count != 1) out->error = "sync takes no arguments";
     } else if (word_is(cmd, "wifi")) {
-        if (t.count == 2 && word_is(t.tok[1], "clear")) {
+        if (t->count == 2 && word_is(t->tok[1], "clear")) {
             out->type = HOME_CMD_WIFI_CLEAR;
             return;
         }
-        if (t.count < 2 || t.count > 3) {
+        if (t->count < 2 || t->count > 3) {
             set_error(out, "usage: wifi \"<ssid>\" \"<password>\"  or  wifi clear");
             return;
         }
-        size_t ssid_len = strlen(t.tok[1]);
+        size_t ssid_len = strlen(t->tok[1]);
         if (ssid_len == 0 || ssid_len > HOME_SSID_MAX) {
             set_error(out, "SSID must be 1 to 32 bytes");
             return;
         }
-        const char *pass = t.count == 3 ? t.tok[2] : "";
+        const char *pass = t->count == 3 ? t->tok[2] : "";
         size_t pass_len = strlen(pass);
         if (pass_len != 0 && (pass_len < 8 || pass_len > 63) && !is_hex64(pass)) {
             set_error(out, "password must be 8 to 63 characters (or empty for an open network)");
             return;
         }
         out->type = HOME_CMD_WIFI_SET;
-        memcpy(out->ssid, t.tok[1], ssid_len + 1);
+        memcpy(out->ssid, t->tok[1], ssid_len + 1);
         memcpy(out->password, pass, pass_len + 1);
     } else if (word_is(cmd, "tz")) {
-        if (t.count != 2) {
+        if (t->count != 2) {
             set_error(out, "usage: tz <POSIX TZ, e.g. <+08>-8>  or  tz default");
             return;
         }
-        if (word_is(t.tok[1], "default")) {
+        if (word_is(t->tok[1], "default")) {
             out->type = HOME_CMD_TZ_RESET;
             return;
         }
-        size_t len = strlen(t.tok[1]);
-        char first = t.tok[1][0];
+        size_t len = strlen(t->tok[1]);
+        char first = t->tok[1][0];
         if (len > HOME_TZ_MAX || !(isalpha((unsigned char)first) || first == '<')) {
             set_error(out, "invalid TZ; use POSIX form such as <+08>-8 or CET-1CEST,M3.5.0,M10.5.0/3");
             return;
         }
         out->type = HOME_CMD_TZ;
-        memcpy(out->tz, t.tok[1], len + 1);
+        memcpy(out->tz, t->tok[1], len + 1);
     } else if (word_is(cmd, "clock")) {
-        if (t.count == 2 && strcmp(t.tok[1], "12") == 0) {
+        if (t->count == 2 && strcmp(t->tok[1], "12") == 0) {
             out->type = HOME_CMD_CLOCK;
             out->twelve_hour = true;
-        } else if (t.count == 2 && strcmp(t.tok[1], "24") == 0) {
+        } else if (t->count == 2 && strcmp(t->tok[1], "24") == 0) {
             out->type = HOME_CMD_CLOCK;
             out->twelve_hour = false;
         } else {
             set_error(out, "usage: clock 12  or  clock 24");
         }
+    } else if (word_is(cmd, "spotify")) {
+        if (t->count == 1 || (t->count == 2 && word_is(t->tok[1], "status"))) {
+            out->type = HOME_CMD_SPOT_STATUS;
+        } else if (t->count == 2 && word_is(t->tok[1], "clear")) {
+            out->type = HOME_CMD_SPOT_CLEAR;
+        } else if (t->count == 3 && word_is(t->tok[1], "client")) {
+            if (!spot_valid_client_id(t->tok[2])) {
+                set_error(out, "client ID must be the 32 hex digits from the Spotify dashboard");
+            } else {
+                out->type = HOME_CMD_SPOT_CLIENT;
+                memcpy(out->spot_arg, t->tok[2], strlen(t->tok[2]) + 1);
+            }
+        } else if (t->count == 3 && word_is(t->tok[1], "token")) {
+            if (!spot_valid_refresh_token(t->tok[2])) {
+                set_error(out, "refresh token looks wrong; copy the whole line from spotify_auth.py");
+            } else {
+                out->type = HOME_CMD_SPOT_TOKEN;
+                memcpy(out->spot_arg, t->tok[2], strlen(t->tok[2]) + 1);
+            }
+        } else {
+            set_error(out, "usage: spotify client <id> | spotify token <refresh> | spotify clear | spotify status");
+        }
     } else {
         set_error(out, "unknown command; type help");
     }
+}
+
+void home_cmd_parse(const char *line, home_cmd_t *out) {
+    memset(out, 0, sizeof(*out));
+    tokens_t t;
+    tokenize(line ? line : "", &t);
+    parse_tokens(&t, out);
+    memset(&t, 0, sizeof(t));  // tokens may hold a password or refresh token
 }

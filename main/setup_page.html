@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI Passport setup</title>
+<style>
+:root{--bg:#0e1116;--card:#171c24;--text:#e8ecf1;--muted:#9aa4b2;--accent:#4cc38a;--spot:#1ed760;--warn:#f0a04b;--line:#232a34}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:480px;margin:0 auto;padding:16px}
+h1{font-size:20px;margin:4px 0 16px}
+h2{font-size:17px;margin:0 0 10px}
+section{background:var(--card);border-radius:14px;padding:16px;margin-bottom:16px}
+label{display:block;color:var(--muted);font-size:14px;margin:10px 0 4px}
+input,select,textarea{width:100%;padding:11px 12px;border-radius:10px;border:1px solid var(--line);background:#0b0e12;color:var(--text);font:inherit}
+textarea{min-height:84px;resize:vertical;word-break:break-all}
+button,.btn{display:inline-block;width:100%;margin-top:12px;padding:12px;border:0;border-radius:10px;background:var(--accent);color:#06130c;font:inherit;font-weight:600;text-align:center;text-decoration:none;cursor:pointer}
+button.secondary{background:#232a34;color:var(--text)}
+.spot{background:var(--spot)}
+.row{display:flex;gap:8px}.row>*{flex:1}
+.state{font-size:14px;color:var(--muted)}
+.ok{color:var(--accent)}.warn{color:var(--warn)}
+.msg{margin-top:10px;font-size:14px;min-height:1em}
+ol{padding-left:20px;margin:8px 0;color:var(--muted);font-size:14px}
+code{background:#0b0e12;padding:1px 5px;border-radius:5px}
+.hidden{display:none}
+</style>
+</head>
+<body>
+<main>
+<h1>AI Passport setup</h1>
+
+<section>
+  <h2>Wi-Fi</h2>
+  <div class="state" id="wifiState">Checking...</div>
+  <label for="ssidList">Network</label>
+  <div class="row">
+    <select id="ssidList"><option value="">Scan to list networks</option></select>
+  </div>
+  <button class="secondary" id="scanBtn" type="button">Scan for networks</button>
+  <label for="ssid">Network name</label>
+  <input id="ssid" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false">
+  <label for="pass">Password</label>
+  <input id="pass" type="password" maxlength="64" autocomplete="off">
+  <button id="wifiBtn" type="button">Connect</button>
+  <div class="msg" id="wifiMsg"></div>
+</section>
+
+<section>
+  <h2>Spotify</h2>
+  <div class="state" id="spotState">Checking...</div>
+  <div id="needNet" class="msg warn hidden"></div>
+  <div id="spotSteps">
+    <label for="cid">Client ID from the Spotify developer dashboard</label>
+    <input id="cid" maxlength="32" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="32 hex digits">
+    <button class="spot" id="startBtn" type="button">Log in with Spotify</button>
+    <div id="loginStep" class="hidden">
+      <a class="btn spot" id="loginLink" href="#" target="_blank" rel="noopener">Open the Spotify login</a>
+      <ol>
+        <li>Approve access on the Spotify page.</li>
+        <li>Your browser then shows a page that cannot load (address starts with <code>http://127.0.0.1:8888</code>). That is expected.</li>
+        <li>Copy that page's whole address and paste it here.</li>
+      </ol>
+      <label for="paste">Address of the page that could not load</label>
+      <textarea id="paste" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+      <button class="spot" id="finishBtn" type="button">Finish login</button>
+    </div>
+  </div>
+  <div class="msg" id="spotMsg"></div>
+  <button class="secondary hidden" id="forgetBtn" type="button">Forget Spotify</button>
+</section>
+
+<p class="state">This page works only while Setup is open on the board.</p>
+</main>
+<script>
+var T = "";
+function $(id) { return document.getElementById(id); }
+function say(id, text, warn) { var e = $(id); e.textContent = text || ""; e.className = "msg" + (warn ? " warn" : " ok"); }
+
+function api(path, body) {
+  var opt = { headers: { "X-Setup-Token": T } };
+  if (body !== undefined) {
+    opt.method = "POST";
+    opt.headers["Content-Type"] = "application/x-www-form-urlencoded";
+    opt.body = new URLSearchParams(body).toString();
+  }
+  return fetch(path, opt).then(function (r) { return r.json(); });
+}
+
+function refresh() {
+  return api("/api/status").then(function (s) {
+    var w = s.wifi;
+    $("wifiState").innerHTML = "";
+    var t = w.ssid ? (w.connected ? "Connected to \"" + w.ssid + "\" (" + w.ip + ")" : "Saved \"" + w.ssid + "\", not connected")
+                   : "No Wi-Fi saved yet";
+    $("wifiState").textContent = t;
+    $("wifiState").className = "state " + (w.connected ? "ok" : "warn");
+
+    var sp = s.spotify;
+    var st = sp.link === "ok" ? "Linked" : sp.link === "revoked" ? "Link expired: log in again" : "Not linked";
+    $("spotState").textContent = st;
+    $("spotState").className = "state " + (sp.link === "ok" ? "ok" : "warn");
+    $("forgetBtn").classList.toggle("hidden", sp.link === "none");
+    if (sp.client_id && !$("cid").value) $("cid").value = sp.client_id;
+
+    var need = "";
+    if (!w.connected) {
+      need = "Spotify login needs the board online. Connect it to Wi-Fi above first.";
+    } else if (s.via_ap) {
+      need = "Spotify login needs internet on this phone. Switch the phone back to \"" + w.ssid +
+             "\", then open http://" + w.ip + "/ (also shown on the board).";
+    }
+    $("needNet").textContent = need;
+    $("needNet").classList.toggle("hidden", !need);
+    $("spotSteps").classList.toggle("hidden", !!need);
+  }).catch(function () {
+    $("wifiState").textContent = "The board is not answering. Is Setup still open on it?";
+    $("wifiState").className = "state warn";
+  });
+}
+
+$("ssidList").onchange = function () { if (this.value) $("ssid").value = this.value; };
+
+$("scanBtn").onclick = function () {
+  say("wifiMsg", "Scanning...");
+  api("/api/scan").then(function (r) {
+    if (!r.networks) { say("wifiMsg", r.message || "Scan not possible right now; type the name instead.", true); return; }
+    var sel = $("ssidList");
+    sel.innerHTML = "";
+    var first = document.createElement("option");
+    first.value = ""; first.textContent = r.networks.length ? "Choose a network" : "No networks found";
+    sel.appendChild(first);
+    r.networks.forEach(function (n) {
+      var o = document.createElement("option");
+      o.value = n.ssid;
+      o.textContent = n.ssid + (n.secure ? "" : " (open)") + "  " + n.rssi + " dBm";
+      sel.appendChild(o);
+    });
+    say("wifiMsg", "");
+  }).catch(function () { say("wifiMsg", "Scan failed.", true); });
+};
+
+$("wifiBtn").onclick = function () {
+  say("wifiMsg", "Saving...");
+  api("/api/wifi", { ssid: $("ssid").value, password: $("pass").value }).then(function (r) {
+    say("wifiMsg", r.message, !r.ok);
+    if (r.ok) { $("pass").value = ""; setTimeout(refresh, 4000); }
+  }).catch(function () {
+    say("wifiMsg", "Saved, but this phone lost the connection. If it dropped off the setup Wi-Fi, rejoin it.", true);
+  });
+};
+
+$("startBtn").onclick = function () {
+  say("spotMsg", "");
+  api("/api/spotify/start", { client_id: $("cid").value.trim() }).then(function (r) {
+    if (!r.ok) { say("spotMsg", r.message, true); return; }
+    $("loginLink").href = r.url;
+    $("loginStep").classList.remove("hidden");
+    $("paste").value = "";
+  }).catch(function () { say("spotMsg", "The board did not answer.", true); });
+};
+
+$("finishBtn").onclick = function () {
+  say("spotMsg", "Finishing login with Spotify...");
+  api("/api/spotify/finish", { pasted: $("paste").value }).then(function (r) {
+    say("spotMsg", r.message, !r.ok);
+    if (r.ok) { $("loginStep").classList.add("hidden"); refresh(); }
+  }).catch(function () { say("spotMsg", "The board did not answer.", true); });
+};
+
+$("forgetBtn").onclick = function () {
+  if (!confirm("Forget the Spotify login on the board?")) return;
+  api("/api/spotify/clear", {}).then(function (r) { say("spotMsg", r.message, !r.ok); refresh(); });
+};
+
+fetch("/api/session").then(function (r) { return r.json(); }).then(function (s) {
+  T = s.token;
+  refresh();
+  setInterval(refresh, 5000);
+});
+</script>
+</body>
+</html>

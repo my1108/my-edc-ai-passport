@@ -47,8 +47,16 @@ run_static_checks() {
     "${test_dir}/test_home_json"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
         tests/test_home_logic.c main/home_logic.c main/home_json.c \
+        main/spot_logic.c main/spot_json.c \
         -o "${test_dir}/test_home_logic"
     "${test_dir}/test_home_logic"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_spot_logic.c main/spot_logic.c main/spot_json.c main/home_json.c \
+        -o "${test_dir}/test_spot_logic"
+    "${test_dir}/test_spot_logic"
+    "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Imain \
+        tests/test_setup_logic.c main/setup_logic.c -o "${test_dir}/test_setup_logic"
+    "${test_dir}/test_setup_logic"
     "${CC:-cc}" -std=c11 -Wall -Wextra -Werror -Icomponents/bsp/src \
         tests/test_bsp_display_rounding.c components/bsp/src/bsp_display_rounding.c \
         -o "${test_dir}/test_bsp_display_rounding"

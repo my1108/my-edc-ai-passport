@@ -15,11 +15,17 @@
 #include "home_logic.h"
 #include "home_net.h"
 #include "home_store.h"
+#include "spot_net.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "home_console";
 
-#define LINE_MAX_LEN 200
+#define LINE_MAX_LEN 400   // "spotify token <refresh token>" is ~150 characters
+
+static void wipe_str(char *p, size_t n) {
+    volatile char *v = p;
+    while (n--) *v++ = 0;
+}
 
 static const char *sync_state_name(home_sync_state_t s) {
     switch (s) {
@@ -39,7 +45,11 @@ static void print_help(void) {
            "  tz default                  back to %s\n"
            "  clock 12 | clock 24         clock format\n"
            "  sync                        sync time and weather now\n"
-           "  status                      show settings and state\n\n",
+           "  status                      show settings and state\n"
+           "  spotify client <client ID>  save the Spotify app's client ID\n"
+           "  spotify token <refresh>     save the refresh token from tools/spotify_auth.py\n"
+           "  spotify clear               forget the Spotify link\n"
+           "  spotify                     show the Spotify link and playback state\n\n",
            CONFIG_HOME_TZ_DEFAULT);
 }
 
@@ -73,6 +83,54 @@ static void print_status(void) {
            (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_8BIT),
            (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT));
     memset(&settings, 0, sizeof(settings));
+}
+
+static const char *spot_result_name(spot_result_t r) {
+    switch (r) {
+    case SPOT_RES_NONE: return "no request yet";
+    case SPOT_RES_OK: return "ok";
+    case SPOT_RES_IDLE: return "nothing playing";
+    case SPOT_RES_AUTH: return "token rejected";
+    case SPOT_RES_PREMIUM: return "Premium required";
+    case SPOT_RES_FORBIDDEN: return "forbidden (is the account on the app's user list?)";
+    case SPOT_RES_NO_DEVICE: return "no active device";
+    case SPOT_RES_RATE_LIMIT: return "rate limited";
+    case SPOT_RES_SERVER: return "Spotify server error";
+    case SPOT_RES_NETWORK: return "no response";
+    default: return "unexpected reply";
+    }
+}
+
+static void print_spotify(void) {
+    char client_id[SPOT_CLIENT_ID_LEN + 1];
+    char refresh[SPOT_REFRESH_MAX + 1];
+    home_store_load_spotify(client_id, sizeof(client_id), refresh, sizeof(refresh));
+    spot_status_t st;
+    spot_get_status(&st);
+
+    printf("\nSpotify  : %s\n", st.link == SPOT_LINK_OK ? "linked"
+                               : st.link == SPOT_LINK_REVOKED ? "link rejected; run tools/spotify_auth.py again"
+                               : "not linked");
+    // The client ID is not secret, but show only its start; never print the token.
+    if (client_id[0]) {
+        printf("Client ID: %.6s...\n", client_id);
+    } else {
+        printf("Client ID: not set\n");
+    }
+    printf("Token    : %s\n", refresh[0] ? "set, hidden" : "not set");
+    printf("Page     : %s, last poll %s\n", st.active ? "open" : "closed", spot_result_name(st.last));
+    if (st.fetched && st.now.have_item) {
+        char pos[12], len[12];
+        int32_t at = spot_progress_at(&st.now, st.now_at_us, esp_timer_get_time());
+        spot_fmt_time(pos, sizeof(pos), at);
+        spot_fmt_time(len, sizeof(len), st.now.duration_ms);
+        // Raw UTF-8, so titles the screen font cannot draw are still readable here.
+        printf("Playing  : %s - %s (%s / %s, %s)\n", st.now.artist, st.now.title, pos, len,
+               st.now.is_playing ? "playing" : "paused");
+        if (st.now.device[0]) printf("Device   : %s\n", st.now.device);
+    }
+    printf("\n");
+    wipe_str(refresh, sizeof(refresh));
 }
 
 static void handle_line(const char *line) {
@@ -125,13 +183,37 @@ static void handle_line(const char *line) {
         err = home_store_save_clock(cmd.twelve_hour);
         if (err == ESP_OK) printf("Clock set to %s-hour.\n", cmd.twelve_hour ? "12" : "24");
         break;
+    case HOME_CMD_SPOT_STATUS:
+        print_spotify();
+        break;
+    case HOME_CMD_SPOT_CLIENT:
+        err = home_store_save_spotify_client(cmd.spot_arg);
+        if (err == ESP_OK) {
+            printf("Saved Spotify client ID.\n");
+            spot_link_changed();
+        }
+        break;
+    case HOME_CMD_SPOT_TOKEN:
+        err = home_store_save_spotify_token(cmd.spot_arg);
+        if (err == ESP_OK) {
+            printf("Saved Spotify refresh token (hidden). Press UP on the home screen.\n");
+            spot_link_changed();
+        }
+        break;
+    case HOME_CMD_SPOT_CLEAR:
+        err = home_store_clear_spotify();
+        if (err == ESP_OK) {
+            printf("Spotify link erased.\n");
+            spot_link_changed();
+        }
+        break;
     case HOME_CMD_ERROR:
     default:
         printf("Error: %s\n", cmd.error ? cmd.error : "invalid command");
         break;
     }
     if (err != ESP_OK) printf("Error: could not save setting (%s)\n", esp_err_to_name(err));
-    memset(&cmd, 0, sizeof(cmd));  // drop the password copy
+    wipe_str((char *)&cmd, sizeof(cmd));  // drop the password / token copy
 }
 
 static void console_task(void *arg) {
@@ -178,7 +260,7 @@ esp_err_t home_console_start(void) {
     // Route console output through the driver too, so logs and command replies
     // do not race the driver for the hardware FIFO.
     usb_serial_jtag_vfs_use_driver();
-    if (xTaskCreate(console_task, "home_console", 4096, NULL, 2, NULL) != pdPASS) {
+    if (xTaskCreate(console_task, "home_console", 6144, NULL, 2, NULL) != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;

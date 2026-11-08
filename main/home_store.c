@@ -125,6 +125,34 @@ esp_err_t home_store_save_clock(bool twelve_hour) {
     return err;
 }
 
+void home_store_load_spotify(char *client_id, size_t client_id_size, char *refresh, size_t refresh_size) {
+    client_id[0] = 0;
+    refresh[0] = 0;
+    nvs_handle_t h;
+    if (nvs_open(NS, NVS_READONLY, &h) != ESP_OK) return;
+    load_str(h, "sp_cid", client_id, client_id_size);
+    load_str(h, "sp_rt", refresh, refresh_size);
+    nvs_close(h);
+}
+
+esp_err_t home_store_save_spotify_client(const char *client_id) {
+    return write_and_commit("sp_cid", op_set_str, client_id);
+}
+
+esp_err_t home_store_save_spotify_token(const char *refresh) {
+    return write_and_commit("sp_rt", op_set_str, refresh);
+}
+
+esp_err_t home_store_clear_spotify_token(void) {
+    return write_and_commit("sp_rt", op_erase, NULL);
+}
+
+esp_err_t home_store_clear_spotify(void) {
+    esp_err_t err = write_and_commit("sp_cid", op_erase, NULL);
+    esp_err_t err2 = home_store_clear_spotify_token();
+    return err != ESP_OK ? err : err2;
+}
+
 void home_apply_tz(const char *tz) {
     setenv("TZ", tz, 1);
     tzset();
