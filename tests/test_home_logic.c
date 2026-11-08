@@ -250,6 +250,49 @@ static void test_navigation(void) {
     assert(r.page == HOME_PAGE_APPS && !r.page_changed);
 }
 
+static void test_screen_sleep(void) {
+    const int64_t S = 1000000;
+    home_idle_t idle;
+    home_idle_init(&idle, 0);
+
+    // Stays awake until the timeout, then sleeps exactly once.
+    assert(!home_idle_tick(&idle, 29 * S, 30 * S));
+    assert(home_idle_tick(&idle, 30 * S, 30 * S) && idle.asleep);
+    assert(!home_idle_tick(&idle, 60 * S, 30 * S));
+
+    // The waking press, its click and its release are all swallowed.
+    home_idle_result_t r = home_idle_key(&idle, true, false, 61 * S);
+    assert(r.woke && !r.deliver && !idle.asleep);
+    r = home_idle_key(&idle, false, false, 61 * S + 100);   // click
+    assert(!r.deliver && !r.woke);
+    r = home_idle_key(&idle, false, true, 61 * S + 200);    // release
+    assert(!r.deliver);
+    // The next press acts normally.
+    r = home_idle_key(&idle, true, false, 62 * S);
+    assert(r.deliver && !r.woke);
+    r = home_idle_key(&idle, false, false, 62 * S + 100);
+    assert(r.deliver);
+
+    // Key activity restarts the countdown.
+    assert(!home_idle_tick(&idle, 92 * S, 30 * S));         // last key at 62 s + 100 us
+    assert(home_idle_tick(&idle, 92 * S + 100, 30 * S));
+
+    // If the waking release is lost, the next press still works.
+    r = home_idle_key(&idle, true, false, 100 * S);
+    assert(r.woke && idle.swallow);
+    r = home_idle_key(&idle, true, false, 101 * S);
+    assert(r.deliver && !idle.swallow);
+
+    // A release that wakes (press missed) leaves nothing to swallow.
+    assert(home_idle_tick(&idle, 200 * S, 30 * S));
+    r = home_idle_key(&idle, false, true, 201 * S);
+    assert(r.woke && !idle.swallow);
+
+    // A zero timeout never sleeps.
+    home_idle_init(&idle, 0);
+    assert(!home_idle_tick(&idle, 3600 * S, 0));
+}
+
 static void test_commands(void) {
     home_cmd_t c;
     home_cmd_parse("", &c);
@@ -317,6 +360,7 @@ int main(void) {
     test_battery();
     test_cache();
     test_navigation();
+    test_screen_sleep();
     test_commands();
     printf("home logic tests: PASS\n");
     return 0;

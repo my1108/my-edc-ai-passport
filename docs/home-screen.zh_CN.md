@@ -19,6 +19,8 @@
 
 在 Apps 和 Focus 占位页面上，按 `OK` 返回主屏。
 
+30 秒内没有按键时屏幕进入休眠（关闭背光）。按任意键唤醒；这次按键只负责唤醒屏幕，不会打开页面或开始同步。屏幕休眠期间，时钟、Wi-Fi 和天气仍在后台运行。
+
 内置 Montserrat 字体没有间隔号（U+00B7）和省略号（U+2026），因此界面改用项目符号（U+2022）和三个句点。城市名以 ASCII 显示：带重音的拉丁字母去掉重音，其他文字显示为 `?`。
 
 ## 联网行为
@@ -54,7 +56,7 @@ status
 
 ## 编译期选项
 
-`idf.py menuconfig` → **AI Passport Home Screen** 可设置默认时区、默认 12 小时制、校时钟点、SNTP 服务器、定位 URL、Open-Meteo 基础 URL 和天气刷新间隔。
+`idf.py menuconfig` → **AI Passport Home Screen** 可设置默认时区、默认 12 小时制、校时钟点、SNTP 服务器、定位 URL、Open-Meteo 基础 URL、屏幕休眠时间（`CONFIG_HOME_SCREEN_SLEEP_S`，0 表示从不休眠）和天气刷新间隔。
 
 ## 代码结构
 

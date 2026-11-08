@@ -14,6 +14,11 @@ void home_ui_create(void);
 // Show a page. Caller must hold bsp_lvgl_lock().
 void home_ui_show(home_page_t page);
 
+// Pause the refresh timer while the screen sleeps; on wake, resume it and
+// redraw at once so the first lit frame is current. Caller must hold
+// bsp_lvgl_lock().
+void home_ui_set_awake(bool awake);
+
 // Store the latest battery state of charge (0..100, or -1 when unavailable).
 // Safe from any task; the UI picks it up on its next refresh.
 void home_ui_set_battery(int soc);

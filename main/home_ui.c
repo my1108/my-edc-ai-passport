@@ -41,6 +41,7 @@ typedef struct {
 } weather_icon_t;
 
 static lv_obj_t *s_screens[3];
+static lv_timer_t *s_refresh_timer;
 
 // Home screen widgets
 static lv_obj_t *s_wifi;
@@ -492,7 +493,17 @@ void home_ui_create(void) {
     build_placeholder(HOME_PAGE_FOCUS, "FOCUS", LV_SYMBOL_EYE_OPEN, "Focus",
                       "Focus sessions are\ncoming soon.");
     refresh_cb(NULL);
-    lv_timer_create(refresh_cb, REFRESH_MS, NULL);
+    s_refresh_timer = lv_timer_create(refresh_cb, REFRESH_MS, NULL);
+}
+
+void home_ui_set_awake(bool awake) {
+    if (!s_refresh_timer) return;
+    if (awake) {
+        refresh_cb(NULL);
+        lv_timer_resume(s_refresh_timer);
+    } else {
+        lv_timer_pause(s_refresh_timer);
+    }
 }
 
 void home_ui_show(home_page_t page) {

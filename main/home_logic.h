@@ -228,6 +228,33 @@ typedef struct {
 home_nav_result_t home_nav_handle(home_page_t page, home_key_t key, home_key_ev_t ev);
 
 // ---------------------------------------------------------------------------
+// Screen sleep
+// ---------------------------------------------------------------------------
+
+// The screen sleeps after a period without key activity. The key press that
+// wakes it is swallowed (through its release), so waking never also opens a
+// page or starts a sync.
+typedef struct {
+    bool asleep;
+    bool swallow;            // drop events until the waking key is released
+    int64_t last_activity_us;
+} home_idle_t;
+
+typedef struct {
+    bool deliver;            // pass the event on to navigation
+    bool woke;               // the screen must be turned back on
+} home_idle_result_t;
+
+void home_idle_init(home_idle_t *idle, int64_t now_us);
+
+// Call for every raw key event (press, release, click, long, ...).
+home_idle_result_t home_idle_key(home_idle_t *idle, bool is_press, bool is_release, int64_t now_us);
+
+// Call periodically. Returns true exactly when the screen should go to sleep.
+// timeout_us <= 0 disables sleeping.
+bool home_idle_tick(home_idle_t *idle, int64_t now_us, int64_t timeout_us);
+
+// ---------------------------------------------------------------------------
 // Serial provisioning commands
 // ---------------------------------------------------------------------------
 
