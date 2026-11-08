@@ -6,6 +6,7 @@ idf_component_register(
          "home_net.c"
          "home_console.c"
          "home_ui.c"
+         "home_apps.c"
          "spot_json.c"
          "spot_logic.c"
          "spot_net.c"

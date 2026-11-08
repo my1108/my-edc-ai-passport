@@ -15,9 +15,18 @@
 | 时钟 | 大号 `HH:MM` 加小号秒数；默认 24 小时制，可选带 AM/PM 的 12 小时制 |
 | 天气卡片 | 图标（晴、少云、多云、雾、雨、雪、雷暴；夜间显示月亮），摄氏温度，天气描述，以及 `City • H xx° L xx°` |
 | 同步行 | `Time synced today • HH:MM`、`Syncing time...`，或橙色的 `Sync failed • retrying in 1 min` |
-| 按键提示 | `UP` Spotify、`OK` Setup、`DOWN` Sync now |
+| 按键提示 | `UP` Apps、`OK` Setup、`DOWN` Sync now |
 
-按 `UP` 进入 Spotify [正在播放页面](spotify.zh_CN.md)，在该页面上 `UP`、`OK`、`DOWN` 控制播放，长按 `OK` 返回主屏。按 `OK` 打开 [Setup](#用手机设置)，用手机设置 Wi-Fi 和 Spotify。
+按 `UP` 打开 **Apps** 应用列表。用 `UP` 和 `DOWN` 选择应用（选中项停在第一项和最后一项，不会循环），按 `OK` 打开。长按 `OK` 总是返回上一级：从应用回到列表，从列表回到主屏。列表只显示已安装的应用，目前只有 [Spotify 正在播放](spotify.zh_CN.md)。按 `OK` 打开 [Setup](#用手机设置)，用手机设置 Wi-Fi 和 Spotify。
+
+| 位置 | `UP` | `DOWN` | 短按 `OK` | 长按 `OK` |
+| --- | --- | --- | --- | --- |
+| 主屏 | 应用列表 | 立即同步 | Setup | - |
+| 应用列表 | 上一项 | 下一项 | 打开应用 | 主屏 |
+| Spotify | 上一首 | 下一首 | 播放 / 暂停 | 应用列表 |
+| Setup | 上一张二维码卡片 | 下一张二维码卡片 | 主屏 | 主屏 |
+
+应用的界面只在应用打开期间存在。打开时创建界面；离开时先停止应用的服务（Spotify 停止轮询），再删除界面，因此同一时间只有一个应用占用 LVGL 内存。添加应用只需在 `main/home_apps.c` 的 `HOME_APPS` 中加一项：名称、图标、副标题，以及创建、刷新、销毁、启停和按键回调。列表最多容纳三个应用（`HOME_APPS_MAX`）。
 
 30 秒内没有按键时屏幕进入休眠（关闭背光）。按任意键唤醒；这次按键只负责唤醒屏幕，不会打开页面或开始同步。屏幕休眠期间，时钟、Wi-Fi 和天气仍在后台运行。
 
@@ -86,7 +95,8 @@ status
 | 文件 | 作用 |
 | --- | --- |
 | `main/main.c` | 启动、按键队列、电量轮询 |
-| `main/home_ui.c` | 主屏、Spotify 和 Setup 页面；250 ms 刷新定时器 |
+| `main/home_ui.c` | 主屏、应用列表、Spotify 和 Setup 页面；250 ms 刷新定时器 |
+| `main/home_apps.c`、`main/home_apps.h` | 应用列表的注册表和应用生命周期回调 |
 | `main/home_net.c` | Wi-Fi STA、SNTP、定位和天气工作任务 |
 | `main/home_store.c` | NVS 设置与缓存 |
 | `main/home_console.c` | USB 串口命令控制台 |

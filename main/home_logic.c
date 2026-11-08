@@ -367,22 +367,31 @@ bool home_cache_decode(const home_cache_blob_t *blob, home_cache_t *cache) {
 // ---------------------------------------------------------------------------
 
 home_nav_result_t home_nav_handle(home_page_t page, home_key_t key, home_key_ev_t ev) {
-    home_nav_result_t r = { .page = page, .page_changed = false, .sync_now = false,
-                            .spot_cmd = SPOT_CMD_NONE, .setup_step = 0 };
+    home_nav_result_t r = { .page = page, .page_changed = false, .sync_now = false, .setup_step = 0,
+                            .tray_step = 0, .open_app = false, .app_key = false };
     if (ev == HOME_KEY_EV_OTHER) return r;
 
-    if (page == HOME_PAGE_SPOTIFY) {
+    if (page == HOME_PAGE_APP) {
+        if (key == HOME_KEY_OK && ev == HOME_KEY_EV_LONG) {
+            r.page = HOME_PAGE_APPS;
+        } else if (ev == HOME_KEY_EV_CLICK) {
+            r.app_key = true;
+        }
+    } else if (page == HOME_PAGE_APPS) {
         if (key == HOME_KEY_OK && ev == HOME_KEY_EV_LONG) {
             r.page = HOME_PAGE_HOME;
         } else if (ev == HOME_KEY_EV_CLICK) {
-            r.spot_cmd = key == HOME_KEY_UP ? SPOT_CMD_PREV
-                       : key == HOME_KEY_DOWN ? SPOT_CMD_NEXT
-                       : SPOT_CMD_TOGGLE;
+            if (key == HOME_KEY_OK) {
+                r.open_app = true;
+                r.page = HOME_PAGE_APP;
+            } else {
+                r.tray_step = key == HOME_KEY_UP ? -1 : 1;
+            }
         }
     } else if (page == HOME_PAGE_HOME) {
         if (ev != HOME_KEY_EV_CLICK) return r;
         if (key == HOME_KEY_UP) {
-            r.page = HOME_PAGE_SPOTIFY;
+            r.page = HOME_PAGE_APPS;
         } else if (key == HOME_KEY_OK) {
             r.page = HOME_PAGE_SETUP;
         } else if (key == HOME_KEY_DOWN) {
@@ -397,6 +406,24 @@ home_nav_result_t home_nav_handle(home_page_t page, home_key_t key, home_key_ev_
     }
     r.page_changed = r.page != page;
     return r;
+}
+
+int home_tray_move(int selected, int delta, int count) {
+    if (count <= 0) return 0;
+    int s = selected + delta;
+    if (s < 0) s = 0;
+    if (s > count - 1) s = count - 1;
+    return s;
+}
+
+spot_cmd_t home_spotify_key(home_key_t key, home_key_ev_t ev) {
+    if (ev != HOME_KEY_EV_CLICK) return SPOT_CMD_NONE;
+    switch (key) {
+    case HOME_KEY_UP: return SPOT_CMD_PREV;
+    case HOME_KEY_DOWN: return SPOT_CMD_NEXT;
+    case HOME_KEY_OK: return SPOT_CMD_TOGGLE;
+    default: return SPOT_CMD_NONE;
+    }
 }
 
 // ---------------------------------------------------------------------------

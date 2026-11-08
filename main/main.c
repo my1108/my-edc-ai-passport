@@ -1,9 +1,11 @@
 // main/main.c - AI Passport home screen: startup and key dispatch.
 //
 // Keys (see home_nav_handle in home_logic.c):
-//   Home        UP = Spotify, OK = Setup, DOWN = sync time and weather now
-//   Spotify     UP = previous track, DOWN = next track, OK = play/pause,
-//               hold OK = back to Home
+//   Home        UP = Apps tray, OK = Setup, DOWN = sync time and weather now
+//   Apps tray   UP / DOWN = move (clamped), OK = open, hold OK = back to Home
+//   An app      its own keys (home_apps.c); hold OK = back to the tray.
+//               Spotify: UP = previous, DOWN = next, OK = play/pause.
+//               An app's screen exists only while it is open (home_apps.h).
 //   Setup       UP / DOWN = previous / next QR card, OK = back to Home.
 //               Opening Setup starts the setup hotspot and web page
 //               (setup_portal.c); leaving it stops them. Setup opens at boot
@@ -35,6 +37,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/task.h"
+#include "home_apps.h"
 #include "home_console.h"
 #include "home_logic.h"
 #include "home_net.h"
@@ -74,6 +77,18 @@ static home_page_t s_page = HOME_PAGE_HOME;   // input task only
 static home_idle_t s_idle;                    // input task only
 static bool s_awake = true;                   // input task only
 static int64_t s_setup_activity_us;           // input task only
+static int s_tray_sel;                        // input task only: tray selection
+static int s_app = -1;                        // input task only: open app, -1 none
+
+static const home_app_t *open_app(void) {
+    return s_app >= 0 && s_app < HOME_APP_COUNT ? &HOME_APPS[s_app] : NULL;
+}
+
+// An app runs its services (e.g. Spotify polling) only while its screen is lit.
+static void app_set_active(bool active) {
+    const home_app_t *app = open_app();
+    if (app && app->set_active) app->set_active(active);
+}
 
 // A deep-sleep key wake reboots with the key still held; drop key actions until
 // it is released (key_guard.h). This firmware does not deep sleep yet, but the
@@ -103,8 +118,7 @@ static home_key_t map_key(bsp_btn_t btn) {
 // and weather keep running so the screen is current when it wakes.
 static void screen_set_awake(bool awake) {
     s_awake = awake;
-    // Spotify is polled only while its page is on a lit screen.
-    spot_set_active(awake && s_page == HOME_PAGE_SPOTIFY);
+    app_set_active(awake && s_page == HOME_PAGE_APP);
     if (bsp_lvgl_lock(500)) {
         home_ui_set_awake(awake);
         bsp_lvgl_unlock();
@@ -117,22 +131,40 @@ static void screen_set_awake(bool awake) {
 // Input task only (or app_main before the input task starts).
 static void go_to_page(home_page_t page) {
     if (page == s_page) return;
+    if (page == HOME_PAGE_APP && (s_tray_sel < 0 || s_tray_sel >= HOME_APP_COUNT)) return;
     setup_info_t info;
     memset(&info, 0, sizeof(info));
+    // Leaving an app: stop its services before its screen is deleted.
+    bool leaving_app = s_page == HOME_PAGE_APP;
+    if (leaving_app) app_set_active(false);
     if (s_page == HOME_PAGE_SETUP) setup_portal_stop();
     if (page == HOME_PAGE_SETUP) {
         esp_err_t err = setup_portal_start(&info);
         if (err != ESP_OK) ESP_LOGE(TAG, "setup portal failed: %s", esp_err_to_name(err));
         s_setup_activity_us = esp_timer_get_time();
     }
-    if (bsp_lvgl_lock(500)) {
+    if (bsp_lvgl_lock(2000)) {
         if (page == HOME_PAGE_SETUP) home_ui_setup_open(&info);
+        if (leaving_app) {
+            home_ui_app_close(page);
+            s_app = -1;
+        }
+        if (page == HOME_PAGE_APP) {
+            s_app = s_tray_sel;
+            home_ui_app_open(&HOME_APPS[s_app]);
+        } else if (!leaving_app) {
+            home_ui_show(page);
+        }
         s_page = page;
-        spot_set_active(s_awake && s_page == HOME_PAGE_SPOTIFY);
-        home_ui_show(page);
         bsp_lvgl_unlock();
+        if (page == HOME_PAGE_APP) {
+            ESP_LOGI(TAG, "opened %s", HOME_APPS[s_app].name);
+            app_set_active(s_awake);
+        }
     } else {
-        s_page = page;
+        // Without the lock nothing was built or deleted; stay where we were.
+        ESP_LOGE(TAG, "LVGL busy; page change dropped");
+        if (leaving_app) app_set_active(s_awake);
     }
     memset(&info, 0, sizeof(info));
 }
@@ -146,7 +178,17 @@ static void process_input(const input_event_t *input) {
     home_nav_result_t r = home_nav_handle(s_page, map_key(input->btn), map_event(input->event));
     if (s_page == HOME_PAGE_SETUP) s_setup_activity_us = esp_timer_get_time();
     if (r.sync_now) home_net_sync_now();
-    if (r.spot_cmd != SPOT_CMD_NONE) spot_send(r.spot_cmd);
+    if (r.app_key) {
+        const home_app_t *app = open_app();
+        if (app && app->key) app->key(map_key(input->btn), map_event(input->event));
+    }
+    if (r.tray_step) {
+        s_tray_sel = home_tray_move(s_tray_sel, r.tray_step, HOME_APP_COUNT);
+        if (bsp_lvgl_lock(500)) {
+            home_ui_tray_select(s_tray_sel);
+            bsp_lvgl_unlock();
+        }
+    }
     if (r.setup_step && bsp_lvgl_lock(500)) {
         home_ui_setup_step(r.setup_step);
         bsp_lvgl_unlock();
@@ -175,6 +217,7 @@ static void enter_deep_sleep(void) {
     }
     ESP_LOGI(TAG, "idle for %d min: deep sleep (any key wakes)", CONFIG_HOME_DEEP_SLEEP_MIN);
     s_input_ready = false;
+    app_set_active(false);
     spot_set_active(false);
     // Leave the network cleanly; RF is powered down in deep sleep anyway.
     esp_wifi_disconnect();

@@ -207,7 +207,8 @@ bool home_cache_decode(const home_cache_blob_t *blob, home_cache_t *cache);
 
 typedef enum {
     HOME_PAGE_HOME = 0,
-    HOME_PAGE_SPOTIFY,       // Spotify "Now Playing" (replaced the Apps placeholder)
+    HOME_PAGE_APPS,          // app tray: a list of the apps in home_apps.c
+    HOME_PAGE_APP,           // the app opened from the tray (one at a time)
     HOME_PAGE_SETUP,         // phone setup for Wi-Fi and Spotify (replaced Focus)
     HOME_PAGE_COUNT,
 } home_page_t;
@@ -228,15 +229,27 @@ typedef struct {
     home_page_t page;        // page to show after this key
     bool page_changed;
     bool sync_now;           // start an immediate time/weather sync
-    spot_cmd_t spot_cmd;     // player command to send (Spotify page)
     int setup_step;          // -1 / +1: previous / next card (Setup page)
+    int tray_step;           // -1 / +1: move the tray selection (Apps page)
+    bool open_app;           // open the selected tray entry (page becomes APP)
+    bool app_key;            // pass this key to the open app's key handler
 } home_nav_result_t;
 
-// Home:    UP -> Spotify, OK -> Setup, DOWN -> sync now.
-// Spotify: UP -> previous track, DOWN -> next track, OK -> play/pause,
-//          OK long press -> Home.
-// Setup:   UP / DOWN -> previous / next QR card, OK (click or long) -> Home.
+// Holding OK always goes back one level.
+// Home:  UP -> Apps tray, OK -> Setup, DOWN -> sync now.
+// Apps:  UP / DOWN -> move the selection (clamped, no wrap), OK -> open the
+//        selected app, OK long press -> Home.
+// App:   OK long press -> Apps tray; every other click goes to the app.
+// Setup: UP / DOWN -> previous / next QR card, OK (click or long) -> Home.
 home_nav_result_t home_nav_handle(home_page_t page, home_key_t key, home_key_ev_t ev);
+
+// Moves a list selection by `delta`, clamped to 0..count-1 (no wrap: at the
+// top, UP stays put). Returns 0 for an empty list.
+int home_tray_move(int selected, int delta, int count);
+
+// Spotify's keys inside the app: UP previous track, DOWN next track, OK
+// play/pause (clicks only; OK long press is handled by navigation).
+spot_cmd_t home_spotify_key(home_key_t key, home_key_ev_t ev);
 
 // ---------------------------------------------------------------------------
 // Screen sleep

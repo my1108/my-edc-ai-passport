@@ -280,7 +280,7 @@ static esp_err_t h_spot_finish(httpd_req_t *req) {
     if (err) return send_result(req, false, err);
     wipe(&s_login, sizeof(s_login));
     set_event("Spotify linked");
-    return send_result(req, true, "Spotify is linked. Press UP on the board's home screen.");
+    return send_result(req, true, "Spotify is linked. On the board, open Apps (UP) and choose Spotify.");
 }
 
 static esp_err_t h_spot_clear(httpd_req_t *req) {

@@ -237,7 +237,7 @@ static void test_cache(void) {
 
 static void test_navigation(void) {
     home_nav_result_t r = home_nav_handle(HOME_PAGE_HOME, HOME_KEY_UP, HOME_KEY_EV_CLICK);
-    assert(r.page == HOME_PAGE_SPOTIFY && r.page_changed && !r.sync_now && r.spot_cmd == SPOT_CMD_NONE);
+    assert(r.page == HOME_PAGE_APPS && r.page_changed && !r.sync_now && !r.open_app);
     r = home_nav_handle(HOME_PAGE_HOME, HOME_KEY_OK, HOME_KEY_EV_CLICK);
     assert(r.page == HOME_PAGE_SETUP && r.page_changed && r.setup_step == 0);
     r = home_nav_handle(HOME_PAGE_HOME, HOME_KEY_DOWN, HOME_KEY_EV_CLICK);
@@ -247,19 +247,29 @@ static void test_navigation(void) {
     r = home_nav_handle(HOME_PAGE_HOME, HOME_KEY_OK, HOME_KEY_EV_OTHER);
     assert(!r.page_changed);
 
-    // Spotify: UP previous, DOWN next, OK play/pause, hold OK home.
-    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_UP, HOME_KEY_EV_CLICK);
-    assert(r.spot_cmd == SPOT_CMD_PREV && !r.page_changed);
-    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_DOWN, HOME_KEY_EV_CLICK);
-    assert(r.spot_cmd == SPOT_CMD_NEXT && !r.page_changed);
-    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_OK, HOME_KEY_EV_CLICK);
-    assert(r.spot_cmd == SPOT_CMD_TOGGLE && !r.page_changed);
-    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_OK, HOME_KEY_EV_LONG);
-    assert(r.page == HOME_PAGE_HOME && r.page_changed && r.spot_cmd == SPOT_CMD_NONE);
-    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_UP, HOME_KEY_EV_LONG);
-    assert(r.page == HOME_PAGE_SPOTIFY && !r.page_changed && r.spot_cmd == SPOT_CMD_NONE);
-    r = home_nav_handle(HOME_PAGE_SPOTIFY, HOME_KEY_DOWN, HOME_KEY_EV_OTHER);
-    assert(r.spot_cmd == SPOT_CMD_NONE && !r.sync_now);
+    // Apps tray: UP/DOWN move, OK opens, hold OK goes home.
+    r = home_nav_handle(HOME_PAGE_APPS, HOME_KEY_UP, HOME_KEY_EV_CLICK);
+    assert(r.tray_step == -1 && !r.page_changed && !r.open_app);
+    r = home_nav_handle(HOME_PAGE_APPS, HOME_KEY_DOWN, HOME_KEY_EV_CLICK);
+    assert(r.tray_step == 1 && !r.page_changed);
+    r = home_nav_handle(HOME_PAGE_APPS, HOME_KEY_OK, HOME_KEY_EV_CLICK);
+    assert(r.open_app && r.page == HOME_PAGE_APP && r.page_changed && r.tray_step == 0);
+    r = home_nav_handle(HOME_PAGE_APPS, HOME_KEY_OK, HOME_KEY_EV_LONG);
+    assert(r.page == HOME_PAGE_HOME && r.page_changed && !r.open_app);
+    r = home_nav_handle(HOME_PAGE_APPS, HOME_KEY_UP, HOME_KEY_EV_LONG);
+    assert(!r.page_changed && r.tray_step == 0);
+
+    // Inside an app: clicks go to the app, hold OK returns to the tray.
+    r = home_nav_handle(HOME_PAGE_APP, HOME_KEY_UP, HOME_KEY_EV_CLICK);
+    assert(r.app_key && !r.page_changed);
+    r = home_nav_handle(HOME_PAGE_APP, HOME_KEY_OK, HOME_KEY_EV_CLICK);
+    assert(r.app_key && !r.page_changed);
+    r = home_nav_handle(HOME_PAGE_APP, HOME_KEY_OK, HOME_KEY_EV_LONG);
+    assert(r.page == HOME_PAGE_APPS && r.page_changed && !r.app_key);
+    r = home_nav_handle(HOME_PAGE_APP, HOME_KEY_DOWN, HOME_KEY_EV_LONG);
+    assert(!r.app_key && !r.page_changed);
+    r = home_nav_handle(HOME_PAGE_APP, HOME_KEY_DOWN, HOME_KEY_EV_OTHER);
+    assert(!r.app_key && !r.sync_now);
 
     // Setup: UP / DOWN change the QR card, OK goes home.
     r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_OK, HOME_KEY_EV_CLICK);
@@ -269,11 +279,25 @@ static void test_navigation(void) {
     r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_DOWN, HOME_KEY_EV_CLICK);
     assert(r.page == HOME_PAGE_SETUP && !r.page_changed && r.setup_step == 1 && !r.sync_now);
     r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_UP, HOME_KEY_EV_CLICK);
-    assert(r.setup_step == -1 && r.spot_cmd == SPOT_CMD_NONE);
+    assert(r.setup_step == -1 && !r.app_key);
     r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_UP, HOME_KEY_EV_LONG);
     assert(r.setup_step == 0 && !r.page_changed);
-    r = home_nav_handle(HOME_PAGE_SETUP, HOME_KEY_DOWN, HOME_KEY_EV_OTHER);
-    assert(r.setup_step == 0);
+
+    // Tray selection clamps at both ends.
+    assert(home_tray_move(0, -1, 3) == 0);
+    assert(home_tray_move(0, 1, 3) == 1);
+    assert(home_tray_move(2, 1, 3) == 2);
+    assert(home_tray_move(1, -1, 1) == 0);
+    assert(home_tray_move(0, 1, 1) == 0);
+    assert(home_tray_move(5, 0, 3) == 2);
+    assert(home_tray_move(0, 1, 0) == 0);
+
+    // Spotify's own keys.
+    assert(home_spotify_key(HOME_KEY_UP, HOME_KEY_EV_CLICK) == SPOT_CMD_PREV);
+    assert(home_spotify_key(HOME_KEY_DOWN, HOME_KEY_EV_CLICK) == SPOT_CMD_NEXT);
+    assert(home_spotify_key(HOME_KEY_OK, HOME_KEY_EV_CLICK) == SPOT_CMD_TOGGLE);
+    assert(home_spotify_key(HOME_KEY_OK, HOME_KEY_EV_LONG) == SPOT_CMD_NONE);
+    assert(home_spotify_key(HOME_KEY_UP, HOME_KEY_EV_OTHER) == SPOT_CMD_NONE);
 }
 
 static void test_screen_sleep(void) {
